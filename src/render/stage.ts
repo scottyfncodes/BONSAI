@@ -214,6 +214,13 @@ export class Stage {
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
+    if (this.pendingTree) {
+      this.pendingTree = false;
+      this.rebuildTree();
+      this.applyHighlight();
+      if (this.silhouette) this.applySilhouette();
+      this.dirty = true;
+    }
     let moving = this.rig.update(dt, this.reducedMotion);
     if (this.effects.length) {
       this.effects = this.effects.filter((e) => e.update(dt));
@@ -241,10 +248,18 @@ export class Stage {
 
   // ---------------------------------------------------------------- scene
 
+  /** Use coarser bark while a branch is being dragged (rebuilds every frame). */
+  interactiveQuality = false;
+  private pendingTree = false;
+
   setScene(input: SceneInput, force = false): void {
     const prev = this.input;
     this.input = input;
-    if (force || !prev || prev.tree !== input.tree) this.rebuildTree();
+    if (force || !prev) this.rebuildTree();
+    else if (prev.tree !== input.tree) {
+      // Coalesce: many pointer moves per frame collapse into one rebuild.
+      this.pendingTree = true;
+    }
     const potKey = JSON.stringify([input.pot, input.surface, input.tree.seed]);
     if (force || potKey !== this.potKey) {
       this.potKey = potKey;
@@ -283,7 +298,7 @@ export class Stage {
     this.barkMat.color.set('#ffffff').multiplyScalar(1.3);
     this.barkMat.needsUpdate = true;
 
-    const barkGeo = buildBarkGeometry(input.tree, input.layout, sp);
+    const barkGeo = buildBarkGeometry(input.tree, input.layout, sp, { quality: this.interactiveQuality ? 'low' : 'high' });
     const bark = new THREE.Mesh(barkGeo, this.barkMat);
     bark.castShadow = true;
     bark.receiveShadow = true;

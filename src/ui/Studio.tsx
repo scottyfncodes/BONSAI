@@ -57,6 +57,7 @@ export function Studio() {
         cutT={st.cutT}
         silhouette={st.silhouette}
         turntable={st.turntable}
+        dragging={st.dragging}
         onStage={onStage}
       />
       <StudioHeader record={record} st={st} />

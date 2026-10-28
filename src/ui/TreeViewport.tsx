@@ -22,6 +22,8 @@ export interface ViewportProps {
   turntable?: boolean;
   /** CSS background override (portrait backdrops). */
   background?: string;
+  /** A handle drag is in progress: render coarser for speed. */
+  dragging?: boolean;
   /** Where the tree sits on screen (see CameraRig.framing). */
   framing?: { center: number; fill: number };
   onStage?: (stage: Stage | null) => void;
@@ -31,7 +33,7 @@ export interface ViewportProps {
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export function TreeViewport(props: ViewportProps) {
-  const { work, interactive, selected = null, tool = 'view', cutT = 0, silhouette = false, turntable = false } = props;
+  const { work, interactive, selected = null, tool = 'view', cutT = 0, silhouette = false, turntable = false, dragging = false } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Stage | null>(null);
   const [status, setStatus] = useState<'ok' | 'unavailable' | 'lost'>('ok');
@@ -70,12 +72,13 @@ export function TreeViewport(props: ViewportProps) {
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
+    stage.interactiveQuality = dragging;
     stage.setScene({ tree: work.tree, layout, pot: work.pot, surface: work.surface });
     if (!framed.current) {
       stage.frameTree(true);
       framed.current = true;
     }
-  }, [work, layout]);
+  }, [work, layout, dragging]);
 
   // --- Selection / prune preview.
   useEffect(() => {
