@@ -35,7 +35,7 @@ export class CameraRig {
    * from the top where the tree's middle lands, `fill` the fraction of the
    * view height it occupies. The Studio leaves room for its tool panels.
    */
-  framing = { center: 0.36, fill: 0.5 };
+  framing = { center: 0.37, fill: 0.43 };
 
   /** Choose a resting pose that fits tree and pot into the framing window. */
   setHome(height: number, width: number, potDepth: number, aspect: number): void {

@@ -89,9 +89,8 @@ export function PrunePanel({ st }: { st: StudioState }) {
           <span className="panel-title">Shears</span>
           <BranchStepper />
         </div>
-        <p className="hint" style={{ margin: '4px 0 0' }}>
-          Tap a branch to choose it. The part that would be removed turns <strong style={{ color: 'var(--vermilion)' }}>red</strong>{' '}
-          before anything is cut.
+        <p className="hint" style={{ margin: '2px 0 0' }}>
+          Tap a branch. What would be removed turns <strong style={{ color: 'var(--vermilion)' }}>red</strong> first.
         </p>
       </div>
     );
@@ -165,8 +164,8 @@ export function ShapePanel({ st }: { st: StudioState }) {
           <span className="panel-title">Shape</span>
           <BranchStepper />
         </div>
-        <p className="hint" style={{ margin: '4px 0 0' }}>
-          Tap a branch, then drag the <strong>round handle</strong> to aim it and the <strong>diamond</strong> to curve it. Children move with it.
+        <p className="hint" style={{ margin: '2px 0 0' }}>
+          Tap a branch, then drag the <strong>round handle</strong> to aim it and the <strong>diamond</strong> to curve it.
         </p>
       </div>
     );
