@@ -88,6 +88,9 @@ export class Stage {
   private contact: THREE.Mesh;
   reducedMotion = false;
   cutRing: THREE.Mesh | null = null;
+  private silhouette = false;
+  private silhouetteMats = new Map<string, THREE.Material>();
+  private originalMats = new WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>();
 
   static create(container: HTMLElement): Stage | null {
     try {
@@ -200,7 +203,9 @@ export class Stage {
 
   onFrame(cb: () => void): () => void {
     this.frameListeners.add(cb);
-    return () => this.frameListeners.delete(cb);
+    return () => {
+      this.frameListeners.delete(cb);
+    };
   }
 
   private loop = () => {
@@ -246,6 +251,7 @@ export class Stage {
       this.rebuildPot();
     }
     this.applyHighlight();
+    if (this.silhouette) this.applySilhouette();
     this.invalidate();
   }
 
@@ -320,6 +326,48 @@ export class Stage {
     this.ground.position.y = groundY;
     this.contact.position.y = groundY + 0.002;
     this.contact.scale.set(d.width * 1.5, d.depthZ * 1.7, 1);
+  }
+
+  /** Ink-cutout view: judge the outline without colour or light. */
+  setSilhouette(on: boolean, ink = '#26221e'): void {
+    this.silhouette = on;
+    this.applySilhouette(ink);
+    this.ground.visible = !on;
+    this.contact.visible = !on;
+    this.invalidate();
+  }
+
+  private applySilhouette(ink = '#26221e'): void {
+    const groups = [this.treeGroup, this.potGroup];
+    for (const g of groups) {
+      g.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (this.silhouette) {
+          if (!this.originalMats.has(mesh)) this.originalMats.set(mesh, mesh.material);
+          const orig = this.originalMats.get(mesh) as THREE.MeshStandardMaterial;
+          const key = `${orig.uuid}:${ink}`;
+          let m = this.silhouetteMats.get(key);
+          if (!m) {
+            m = new THREE.MeshBasicMaterial({
+              color: ink,
+              map: orig.map ?? null,
+              alphaTest: orig.alphaTest,
+              side: orig.side,
+            });
+            this.silhouetteMats.set(key, m);
+          }
+          mesh.material = m;
+        } else if (this.originalMats.has(mesh)) {
+          mesh.material = this.originalMats.get(mesh)!;
+        }
+      });
+    }
+  }
+
+  setTurntable(on: boolean): void {
+    this.rig.autoOrbit = on && !this.reducedMotion ? 0.32 : 0;
+    this.invalidate();
   }
 
   setHighlight(h: Highlight): void {
@@ -587,9 +635,15 @@ export class Stage {
     height: number;
     background: Background;
     caption?: { title: string; lines: string[] };
+    type?: 'image/png' | 'image/jpeg';
   }): Promise<Blob | null> {
+    const out = this.captureCanvas(opts);
+    return new Promise<Blob | null>((resolve) => out.toBlob((b) => resolve(b), opts.type ?? 'image/png', 0.9));
+  }
+
+  /** Synchronous part of capture: render offscreen-sized, paint, restore. */
+  captureCanvas(opts: { width: number; height: number; background: Background; caption?: { title: string; lines: string[] } }): HTMLCanvasElement {
     const { width, height, background, caption } = opts;
-    const savedHighlight = this.highlight;
     this.overlayGroup.visible = false;
     this.fxGroup.visible = false;
     if (this.foliage) highlightFoliage(this.foliage, null, GOLD, 0);
@@ -597,7 +651,9 @@ export class Stage {
     this.renderer.getSize(oldSize);
     const oldDpr = this.renderer.getPixelRatio();
     const oldAspect = this.rig.camera.aspect;
-    const shadowSize = this.sun.shadow.mapSize.x;
+    const out = document.createElement('canvas');
+    out.width = width;
+    out.height = height;
     try {
       this.renderer.setPixelRatio(1);
       this.renderer.setSize(width, height, false);
@@ -606,16 +662,12 @@ export class Stage {
       this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
       this.rig.apply();
       this.renderer.render(this.scene, this.rig.camera);
-      const out = document.createElement('canvas');
-      out.width = width;
-      out.height = height;
       const g = out.getContext('2d')!;
       const grad = g.createLinearGradient(0, 0, 0, height);
       grad.addColorStop(0, background.stops[0]);
       grad.addColorStop(1, background.stops[1]);
       g.fillStyle = grad;
       g.fillRect(0, 0, width, height);
-      // Soft vignette.
       const vig = g.createRadialGradient(width / 2, height * 0.42, height * 0.2, width / 2, height * 0.5, height * 0.8);
       vig.addColorStop(0, 'rgba(0,0,0,0)');
       vig.addColorStop(1, 'rgba(0,0,0,0.12)');
@@ -624,45 +676,38 @@ export class Stage {
       g.drawImage(this.renderer.domElement, 0, 0, width, height);
       if (caption) {
         const pad = Math.round(width * 0.07);
+        const lineH = Math.round(width * 0.042);
         g.fillStyle = background.ink;
         g.textBaseline = 'alphabetic';
-        g.font = `600 ${Math.round(width * 0.052)}px "Fraunces", Georgia, serif`;
-        g.fillText(caption.title, pad, height - pad - Math.round(width * 0.05) * caption.lines.length);
-        g.font = `500 ${Math.round(width * 0.026)}px "Inter", system-ui, sans-serif`;
+        g.font = `600 ${Math.round(width * 0.058)}px "Fraunces Variable", "Fraunces", Georgia, serif`;
+        const titleY = height - pad - lineH * caption.lines.length - Math.round(width * 0.01);
+        g.fillText(caption.title, pad, titleY);
+        g.font = `500 ${Math.round(width * 0.026)}px "Inter Variable", "Inter", system-ui, sans-serif`;
         g.globalAlpha = 0.72;
-        caption.lines.forEach((line, i) => {
-          g.fillText(line, pad, height - pad - Math.round(width * 0.05) * (caption.lines.length - 1 - i) + Math.round(width * 0.012));
-        });
-        g.globalAlpha = 0.55;
-        g.font = `600 ${Math.round(width * 0.02)}px "Inter", system-ui, sans-serif`;
+        caption.lines.forEach((line, i) => g.fillText(line, pad, titleY + lineH * (i + 1)));
+        g.globalAlpha = 0.5;
+        g.font = `650 ${Math.round(width * 0.019)}px "Inter Variable", "Inter", system-ui, sans-serif`;
         const mark = 'BONSAI · THE STUDIO';
         g.fillText(mark, width - pad - g.measureText(mark).width, pad + Math.round(width * 0.02));
         g.globalAlpha = 1;
       }
-      return await new Promise<Blob | null>((resolve) => out.toBlob((b) => resolve(b), 'image/png'));
     } finally {
       this.renderer.setPixelRatio(oldDpr);
       this.renderer.setSize(oldSize.x, oldSize.y, false);
       this.rig.camera.aspect = oldAspect;
       this.rig.camera.updateProjectionMatrix();
-      this.sun.shadow.mapSize.set(shadowSize, shadowSize);
       this.overlayGroup.visible = true;
       this.fxGroup.visible = true;
-      this.highlight = savedHighlight;
       this.applyHighlight();
+      this.renderer.render(this.scene, this.rig.camera);
       this.invalidate();
     }
+    return out;
   }
 
   /** Small JPEG thumbnail of the current view for collection cards. */
-  async thumbnail(size = 360): Promise<string | null> {
-    const blob = await this.capture({ width: size, height: Math.round(size * 1.25), background: BACKGROUNDS[0]! });
-    if (!blob) return null;
-    const bmp = await createImageBitmap(blob);
-    const c = document.createElement('canvas');
-    c.width = bmp.width;
-    c.height = bmp.height;
-    c.getContext('2d')!.drawImage(bmp, 0, 0);
+  thumbnail(size = 320): string {
+    const c = this.captureCanvas({ width: size, height: Math.round(size * 1.25), background: BACKGROUNDS[0]! });
     return c.toDataURL('image/jpeg', 0.78);
   }
 

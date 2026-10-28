@@ -140,7 +140,8 @@ export function prune(tree: TreeState, id: BranchId, cutT = 0): OpResult {
         branchId: b.parentId!,
         t: clamp(b.attachT - 0.06, 0.02, 0.98),
         roll: b.shape.roll + 0.8,
-        age: 0,
+        // A cut wakes dormant buds: this one can break this growing season.
+        age: 200,
       };
     }
   } else {
@@ -216,7 +217,7 @@ function shortenInPlace(next: TreeState, prev: TreeState, id: BranchId, t: numbe
   next.wounds[wid] = { id: wid, branchId: id, t: 1, roll: 0, size: radiusAtT(b, t, nl.r1), day: prev.day, heal: 0 };
   // A shortened tip pushes out new buds just behind the cut.
   const uid = newId(next, 'u');
-  next.buds[uid] = { id: uid, branchId: id, t: 0.92, roll: b.shape.roll + 1.3, age: 0 };
+  next.buds[uid] = { id: uid, branchId: id, t: 0.92, roll: b.shape.roll + 1.3, age: 200 };
 }
 
 /** Parameter of the point on a branch curve closest to p. */

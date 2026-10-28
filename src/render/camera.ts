@@ -31,16 +31,22 @@ export class CameraRig {
   }
 
   /**
-   * Choose a resting pose that fits the tree and pot in view with room for
-   * the interface above and below.
+   * Where the composition should sit on screen: `center` is the fraction
+   * from the top where the tree's middle lands, `fill` the fraction of the
+   * view height it occupies. The Studio leaves room for its tool panels.
    */
+  framing = { center: 0.36, fill: 0.5 };
+
+  /** Choose a resting pose that fits tree and pot into the framing window. */
   setHome(height: number, width: number, potDepth: number, aspect: number): void {
     const total = height + potDepth;
-    const halfFov = (this.camera.fov * Math.PI) / 360;
-    const halfH = Math.max((total / 2) * 1.32, ((width / 2) * 1.12) / Math.max(aspect, 0.3));
-    const distance = clamp(halfH / Math.tan(halfFov) + 0.8, 5, DIST_LIMITS[1]);
-    // Centre a little low so the tree sits in the open space above the tool dock.
-    this.home = { ...this.home, distance, target: [0, height / 2 - potDepth / 2 - total * 0.06, 0] };
+    const tanHalf = Math.tan((this.camera.fov * Math.PI) / 360);
+    const visibleH = Math.max(total / this.framing.fill, (width * 1.12) / Math.max(aspect, 0.3) / Math.min(1, this.framing.fill * 1.6));
+    const distance = clamp(visibleH / (2 * tanHalf), 5, DIST_LIMITS[1]);
+    const mid = height / 2 - potDepth / 2;
+    // Lower the look-at point so the tree's middle sits `center` from the top.
+    const shift = (0.5 - this.framing.center) * 2 * distance * tanHalf;
+    this.home = { ...this.home, distance, target: [0, mid - shift * Math.cos(this.home.pitch), 0] };
   }
 
   reset(): void {

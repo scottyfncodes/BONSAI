@@ -142,7 +142,7 @@ export function generateSapling(species: SpeciesId, seed: number, preset: Saplin
       bendAngle: rng() * 6.28,
       foliage: 1,
     });
-    if (b) tb.addBud(b.id, 1, 0);
+    if (b) tb.addBud(b.id, 1, 0, 200);
   }
   return tree;
 }
@@ -171,7 +171,7 @@ function growSecondaries(tb: TreeBuilder, primary: Branch, rng: Rng, density: nu
         foliage: range(rng, 0.65, 1),
       });
       if (!sec) continue;
-      tb.addBud(sec.id, 1, rng() * 6.28);
+      tb.addBud(sec.id, 1, rng() * 6.28, 200);
       // Tertiary twigs give the pads texture.
       const sl = tb.layout.get(sec.id)!;
       const sa = anglesFromDir(sl.frame.t);
@@ -188,11 +188,11 @@ function growSecondaries(tb: TreeBuilder, primary: Branch, rng: Rng, density: nu
           bendAngle: rng() * 6.28,
           foliage: 1,
         });
-        if (tw) tb.addBud(tw.id, 1, rng() * 6.28);
+        if (tw) tb.addBud(tw.id, 1, rng() * 6.28, 200);
       }
     }
   }
-  tb.addBud(primary.id, 1, 0);
-  tb.addBud(primary.id, range(rng, 0.2, 0.4), rng() * 6.28);
+  tb.addBud(primary.id, 1, 0, 200);
+  tb.addBud(primary.id, range(rng, 0.2, 0.4), rng() * 6.28, 200);
 }
 

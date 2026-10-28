@@ -70,9 +70,9 @@ export class TreeBuilder {
     return branch;
   }
 
-  addBud(branchId: BranchId, t: number, roll: number): void {
+  addBud(branchId: BranchId, t: number, roll: number, age = 0): void {
     const id = this.newId('u');
-    this.tree.buds[id] = { id, branchId, t, roll, age: 0 };
+    this.tree.buds[id] = { id, branchId, t, roll, age };
   }
 }
 

@@ -20,6 +20,8 @@ export interface GrowthReport {
   healthAfter: number;
 }
 
+/** Days a bud must rest before it can break (it forms one year, opens the next). */
+const BUD_DORMANCY = 120;
 const idNum = (id: string): number => Number.parseInt(id.slice(1), 10) || 0;
 const sortedIds = (o: Record<string, unknown>): string[] => Object.keys(o).sort((a, b) => idNum(a) - idNum(b));
 
@@ -193,12 +195,14 @@ function step(t: TreeState, dt: number, report: GrowthReport, care: Care): void 
   for (const id of sortedIds(t.branches)) {
     const b = t.branches[id]!;
     if (t.day - b.bornDay > youngDays || g === 0) continue;
-    const max = sp.shoot * (1.1 + b.vigor * 0.8);
+    const max = sp.shoot * (0.7 + b.vigor * 0.6);
     if (b.length < max) b.length = Math.min(max, b.length + (dt * sp.shoot * g * b.vigor) / 35);
   }
 
   // --- Bud break (spring, early summer).
   const canBreak = (season === 'spring' || (season === 'summer' && seasonProgress(t.day) < 0.4)) && t.health > 0.3;
+  // A crowded crown has less energy per shoot: growth slows as the tree fills.
+  const crowding = clamp(1.35 - Object.keys(t.branches).length / 260, 0.15, 1);
   if (canBreak) {
     const tb = new TreeBuilder(t, layout);
     for (const budId of sortedIds(t.buds)) {
@@ -212,10 +216,15 @@ function step(t: TreeState, dt: number, report: GrowthReport, care: Care): void 
       }
       const hd = depth.get(host.id) ?? 0;
       if (hd >= MAX_DEPTH) continue;
+      // Buds must overwinter before they break: no same-season cascades.
+      if (bud.age < BUD_DORMANCY) {
+        bud.age += dt;
+        continue;
+      }
       const oldWood = bud.t < 0.85 || t.day - host.bornDay > 200;
       // Pines only push buds where there are needles.
       if (sp.phyllotaxy === 'whorl' && host.foliage < 0.3 && oldWood) continue;
-      const chance = 0.11 * dt * 0.25 * host.vigor * g * (oldWood ? sp.backBud : 1) * t.health;
+      const chance = 0.0065 * dt * host.vigor * g * (oldWood ? sp.backBud : 1) * t.health * crowding;
       if (rng() > chance) {
         bud.age += dt;
         continue;
@@ -239,21 +248,24 @@ function step(t: TreeState, dt: number, report: GrowthReport, care: Care): void 
       });
       if (!shoot) continue;
       report.newShoots.push(shoot.id);
-      const n = sp.phyllotaxy === 'whorl' ? 3 : sp.phyllotaxy === 'opposite' ? 2 : 1;
+      // A terminal bud, plus a lateral (opposite) or a second candle (whorl) on strong shoots.
       const r0 = rng() * 6.28;
-      for (let k = 0; k < n; k++) tb.addBud(shoot.id, k === 0 ? 1 : 0.55 + rng() * 0.3, r0 + (k * Math.PI * 2) / n);
+      tb.addBud(shoot.id, 1, r0);
+      if (sp.phyllotaxy !== 'alternate' && host.vigor > 0.55) tb.addBud(shoot.id, sp.phyllotaxy === 'whorl' ? 1 : 0.6, r0 + Math.PI);
     }
     layout = tb.layout;
   }
 
+  if (!canBreak) for (const bud of Object.values(t.buds)) bud.age += dt;
+
   // --- New buds set in summer on vigorous foliage.
-  if (season === 'summer' && g > 0) {
+  if (season === 'summer' && g > 0 && Object.keys(t.buds).length < Object.keys(t.branches).length * 1.1) {
     const budCount = new Map<BranchId, number>();
     for (const b of Object.values(t.buds)) budCount.set(b.branchId, (budCount.get(b.branchId) ?? 0) + 1);
     for (const id of sortedIds(t.branches)) {
       const b = t.branches[id]!;
       if ((budCount.get(id) ?? 0) >= 2 || b.foliage < 0.4) continue;
-      if (rng() < dt * 0.012 * b.vigor * (0.4 + sp.backBud)) {
+      if (rng() < dt * 0.006 * b.vigor * (0.4 + sp.backBud) * crowding) {
         const bid = `u${t.nextId++}`;
         const terminal = !(kids.get(id) ?? []).some((c) => t.branches[c]!.attachT > 0.9);
         t.buds[bid] = {
@@ -275,7 +287,8 @@ function step(t: TreeState, dt: number, report: GrowthReport, care: Care): void 
     for (const id of sortedIds(t.branches)) {
       const b = t.branches[id]!;
       const m = mass.get(id) ?? 0;
-      const targetR = (b.kind === 'trunk' ? 0.03 : 0.008) + 0.03 * Math.sqrt(m) * sp.thicken;
+      // Trunks carry the whole crown and keep thickening for decades.
+      const targetR = b.kind === 'trunk' ? 0.04 + 0.06 * Math.sqrt(m) * sp.thicken : 0.008 + 0.03 * Math.sqrt(m) * sp.thicken;
       if (targetR > b.radius) b.radius += (targetR - b.radius) * dt * 0.0012 * thickSeason * sp.thicken * t.health * feed;
     }
     // Children must stay thinner than their parent where they attach.
