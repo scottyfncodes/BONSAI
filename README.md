@@ -43,6 +43,15 @@ Key design decisions:
 - **Forgiving.** Health has a floor. Trees never die, and time only moves when the player advances it.
 - **Transparent scoring.** Challenges score the silhouette, negative space, balance, trunk, structure, wind direction, pot harmony and finish. Each score comes with a plain-language note. Many shapes score well.
 
+## Art direction
+
+- **Scenery** (`src/render/scenery.ts`): a procedural ink-wash landscape behind the 3D view. It has a seasonal sky, a sun or moon disc, and mist-dissolving ridges, with parallax as the camera turns. The same layers are painted into portrait exports.
+- **Presentation**: each tree sits on a walnut display stand (daiza), on a bench that fades into the scenery. Washi paper grain and a vignette sit over the view. The interface carries a 盆栽 hanko seal.
+- **Trunk character**: surface roots (nebari) flare into the soil. Junipers carry a twisting band of bleached deadwood (shari).
+- **Foliage**: pads are sculpted, with flat shaded undersides and a world-space grain shader that reads as sprays. Foliage self-shadows and sways in a gentle wind (vertex shader). Snow settles on it in winter.
+- **Season**: spring petals, summer motes, autumn leaves and winter snow drift past. A painted moss carpet grows in the soil.
+- **Restraint**: ambient motion renders at about 30 fps, pauses whenever the Studio is hidden, and is off under reduced-motion or via Settings → Living motion. The shadow map only redraws when the tree or pot changes.
+
 ## Save data
 
 Saves live on this device only (localStorage + IndexedDB):

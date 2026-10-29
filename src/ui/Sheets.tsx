@@ -339,6 +339,9 @@ function SettingsSheet() {
         <button className="chip" aria-pressed={st.ambient} onClick={() => updateSettings({ ambient: !st.ambient })}>
           Garden ambience {st.ambient ? 'on' : 'off'}
         </button>
+        <button className="chip" aria-pressed={st.motion} onClick={() => updateSettings({ motion: !st.motion })}>
+          Living motion {st.motion ? 'on' : 'off'} <span style={{ opacity: 0.6, fontWeight: 400 }}>(wind &amp; seasons)</span>
+        </button>
         <button className="chip" aria-pressed={st.haptics} onClick={() => updateSettings({ haptics: !st.haptics })}>
           Haptics {st.haptics ? 'on' : 'off'} <span style={{ opacity: 0.6, fontWeight: 400 }}>(where supported)</span>
         </button>

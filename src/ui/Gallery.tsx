@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { openPortrait, readThumb, toast } from '../app/actions';
 import { getState, setState, useStore } from '../app/store';
+import { Seal } from './art';
 import { type Portrait, deletePortrait, listPortraits } from '../persist/portraits';
 import { IconCamera, IconClose, IconDownload, IconShare, IconTrash, TreeMark } from './icons';
 
@@ -67,7 +68,9 @@ export function Gallery() {
       <div className="page-inner">
         <div className="page-head">
           <div>
-            <div className="eyebrow">Presentation</div>
+            <div className="eyebrow">
+              <Seal size={22} /> Presentation
+            </div>
             <h1>Gallery</h1>
             <p>Portraits of your trees, framed and lit for keeps.</p>
           </div>

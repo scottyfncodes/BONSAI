@@ -1,9 +1,10 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { advanceOnboarding, beginDrag, commitFrom, previewWork, selectBranch, setCutT } from '../app/actions';
 import { onFx, view } from '../app/bus';
-import { getState } from '../app/store';
+import { getState, useStore } from '../app/store';
 import { sound } from '../audio/sound';
 import type { Workpiece } from '../game/model';
+import { type Scenery, SEASON_SCENERY, parallax, sceneryLayers } from '../render/scenery';
 import { Stage } from '../render/stage';
 import { bezierPoint, computeLayout, type TreeLayout } from '../tree/layout';
 import { MIN_SHORTEN_T, aimTip, curveTo, holdFraction, lerpShape, normaliseCutT, previewPrune, releaseShape } from '../tree/ops';
@@ -20,8 +21,10 @@ export interface ViewportProps {
   cutT?: number;
   silhouette?: boolean;
   turntable?: boolean;
-  /** CSS background override (portrait backdrops). */
-  background?: string;
+  /** Painted backdrop; defaults to the tree's current season. */
+  scenery?: Scenery;
+  /** False while this viewport is hidden: it then renders nothing at all. */
+  active?: boolean;
   /** A handle drag is in progress: render coarser for speed. */
   dragging?: boolean;
   /** Where the tree sits on screen (see CameraRig.framing). */
@@ -107,6 +110,13 @@ export function TreeViewport(props: ViewportProps) {
   useEffect(() => {
     stageRef.current?.setTurntable(turntable);
   }, [turntable]);
+
+  const motion = useStore((s) => s.profile.settings.motion);
+  const active = props.active ?? true;
+  useEffect(() => {
+    stageRef.current?.setPaused(!active);
+    stageRef.current?.setAmbient(motion && status === 'ok' && active);
+  }, [motion, status, work, active]);
 
   // --- One-shot effects from actions.
   useEffect(
@@ -255,13 +265,11 @@ export function TreeViewport(props: ViewportProps) {
   }, [interactive]);
 
   const season = seasonOf(work.tree.day);
+  const scenery = props.scenery ?? SEASON_SCENERY[season];
   return (
-    <div
-      ref={hostRef}
-      className={`viewport season-${season}${silhouette ? ' silhouette' : ''}`}
-      style={props.background ? { background: props.background } : undefined}
-      data-testid="viewport"
-    >
+    <div ref={hostRef} className={`viewport season-${season}${silhouette ? ' silhouette' : ''}`} data-testid="viewport">
+      {!silhouette && <Backdrop scenery={scenery} stageRef={stageRef} />}
+      <div className="paper-overlay" aria-hidden />
       {status !== 'ok' && (
         <div className="fallback" role="alert">
           <div>
@@ -507,6 +515,48 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
           <span className="handle-label">{effT === 0 ? 'Remove at base' : `Shorten to ${Math.round(effT * 100)}%`}</span>
         </button>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- backdrop
+
+/** Ink-wash landscape behind the canvas; layers drift with the camera for depth. */
+function Backdrop({ scenery, stageRef }: { scenery: Scenery; stageRef: React.RefObject<Stage | null> }) {
+  const layers = useMemo(() => sceneryLayers(scenery), [scenery]);
+  useEffect(() => {
+    stageRef.current?.setFloorColor(scenery.floor);
+  }, [scenery, stageRef]);
+  const refs = useRef<(HTMLDivElement | null)[]>([]);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let last = NaN;
+    const update = () => {
+      const yaw = stage.rig.pose.yaw;
+      if (Math.abs(yaw - last) < 1e-4) return;
+      last = yaw;
+      layers.forEach((l, i) => {
+        const el = refs.current[i];
+        if (el && l.depth) el.style.transform = `translate3d(${parallax(l.depth, yaw).toFixed(2)}px,0,0)`;
+      });
+    };
+    update();
+    return stage.onFrame(update);
+  }, [layers, stageRef]);
+  return (
+    <div className="backdrop" aria-hidden>
+      {layers.map((l, i) => (
+        <div
+          key={`${scenery.id}-${i}`}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          className="backdrop-layer"
+          // Generated locally from constant palettes – no user content.
+          dangerouslySetInnerHTML={{ __html: l.svg }}
+        />
+      ))}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { dismissNotice, openSheet, openTree, readThumb } from '../app/actions';
 import { useStore } from '../app/store';
+import { Seal } from './art';
 import { STYLE_LABELS, ageYears, styleOf } from '../game/model';
 import { SPECIES } from '../tree/species';
 import { IconMore, IconPlus, IconSettings, IconStar, TreeMark } from './icons';
@@ -16,7 +17,9 @@ export function Collection() {
       <div className="page-inner">
         <div className="page-head">
           <div>
-            <div className="eyebrow">Your bench</div>
+            <div className="eyebrow">
+              <Seal size={22} /> Your bench
+            </div>
             <h1>Collection</h1>
             <p>
               {list.length} tree{list.length === 1 ? '' : 's'} in progress

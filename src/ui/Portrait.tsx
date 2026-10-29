@@ -60,7 +60,7 @@ export function PortraitMode() {
 
   return (
     <div className="portrait" role="dialog" aria-modal="true" aria-label={`Portrait of ${r.name}`} data-testid="portrait">
-      <TreeViewport work={r.work} interactive={false} turntable={turntable} background={background.css} onStage={onStage} framing={{ center: 0.4, fill: 0.56 }}>
+      <TreeViewport work={r.work} interactive={false} turntable={turntable} scenery={background.scenery} onStage={onStage} framing={{ center: 0.4, fill: 0.56 }}>
         <div className="portrait-caption" style={{ color: background.ink }}>
           <h2>{r.name}</h2>
           {lines.map((l) => (

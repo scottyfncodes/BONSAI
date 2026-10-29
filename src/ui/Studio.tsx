@@ -20,7 +20,8 @@ import { sound } from '../audio/sound';
 import { challengeDef, evaluateChallenge, movesUsed, variantDef } from '../game/challenges';
 import { type TreeRecord, ageYears, calendarLabel } from '../game/model';
 import type { Stage } from '../render/stage';
-import { SPECIES } from '../tree/species';
+import { SEASON_SCENERY } from '../render/scenery';
+import { SPECIES, seasonOf } from '../tree/species';
 import { IconChevronDown, IconCircleCheck, IconCircleX, IconMuted, IconRecenter, IconRedo, IconSound, IconStar, IconUndo } from './icons';
 import { GrowPanel, MetricBar, PotPanel, PrunePanel, ShapePanel, SurfacePanel, ToolDock, ViewPanel, WirePanel } from './Panels';
 import { TreeViewport } from './TreeViewport';
@@ -28,6 +29,7 @@ import { TreeViewport } from './TreeViewport';
 export function Studio() {
   const st = useStore((s) => s.studio);
   const record = useStore(activeRecord);
+  const visible = useStore((s) => s.route === 'studio' && !s.portraitId);
   const stageRef = useRef<Stage | null>(null);
   const onStage = useCallback((s: Stage | null) => {
     stageRef.current = s;
@@ -58,6 +60,7 @@ export function Studio() {
         silhouette={st.silhouette}
         turntable={st.turntable}
         dragging={st.dragging}
+        active={visible}
         onStage={onStage}
       />
       <StudioHeader record={record} st={st} />
@@ -336,11 +339,14 @@ function useThumbnails(stageRef: React.RefObject<Stage | null>, id: string | nul
     const t = window.setTimeout(() => {
       const stage = stageRef.current;
       if (!stage || getState().activeId !== id || getState().studio?.dragging) return;
-      try {
-        storeThumbnail(id, stage.thumbnail());
-      } catch {
-        /* thumbnails are best-effort */
-      }
+      const tree = getState().studio?.history.present.tree;
+      if (!tree) return;
+      stage
+        .thumbnail(SEASON_SCENERY[seasonOf(tree.day)])
+        .then((url) => storeThumbnail(id, url))
+        .catch(() => {
+          /* thumbnails are best-effort */
+        });
     }, 1800);
     return () => window.clearTimeout(t);
   }, [stageRef, id, work, silhouette, dragging]);

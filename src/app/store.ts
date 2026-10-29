@@ -76,7 +76,7 @@ let state: AppState = {
     claimed: [],
     best: {},
     activeTreeId: null,
-    settings: { muted: false, volume: 0.8, ambient: true, haptics: true },
+    settings: { muted: false, volume: 0.8, ambient: true, haptics: true, motion: true },
     onboarding: 0,
     createdAt: 0,
   },
