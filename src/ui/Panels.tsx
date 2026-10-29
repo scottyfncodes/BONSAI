@@ -2,8 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addStone,
   applyWireToSelected,
+  beginDrag,
   commit,
+  commitFrom,
   cutSelected,
+  type DragToken,
   getCopperPreferred,
   grow,
   hasUnlock,
@@ -25,7 +28,7 @@ import {
 } from '../app/actions';
 import { emitFx, view } from '../app/bus';
 import { type StudioState, activeRecord, getState, useStore } from '../app/store';
-import { calendarLabel, type TreeRecord } from '../game/model';
+import { branchLabel, calendarLabel, type TreeRecord, type Workpiece } from '../game/model';
 import { POT_COLORS, POT_SHAPES, STONE_KINDS } from '../game/pots';
 import { type Metric, analyze } from '../game/scoring';
 import { unlockDef } from '../game/unlocks';
@@ -53,17 +56,6 @@ import {
   IconSurface,
 } from './icons';
 
-export function branchLabel(tree: TreeState, b: Branch): string {
-  if (b.kind === 'trunk') return b.parentId === null ? 'Trunk base' : 'Trunk (leader)';
-  let depth = 0;
-  let cur: Branch | undefined = b;
-  while (cur && cur.kind !== 'trunk') {
-    depth++;
-    cur = cur.parentId ? tree.branches[cur.parentId] : undefined;
-  }
-  return depth <= 1 ? 'Primary branch' : depth === 2 ? 'Secondary branch' : 'Twig';
-}
-
 const cm = (r: number) => `${(r * 2 * 10).toFixed(1)} cm`;
 
 export function BranchFacts({ tree, b }: { tree: TreeState; b: Branch }) {
@@ -90,7 +82,7 @@ export function PrunePanel({ st }: { st: StudioState }) {
           <BranchStepper />
         </div>
         <p className="hint" style={{ margin: '2px 0 0' }}>
-          Tap a branch. What would be removed turns <strong style={{ color: 'var(--vermilion)' }}>red</strong> first.
+          Tap a branch. What would be removed turns <strong style={{ color: 'var(--vermilion-ink)' }}>red</strong> first.
         </p>
       </div>
     );
@@ -330,7 +322,9 @@ export function GrowPanel({ st }: { st: StudioState }) {
     <div className="panel" data-testid="panel-grow">
       <div className="panel-head">
         <span className="panel-title">{calendarLabel(tree)}</span>
-        <span className="panel-sub">Vigour {vig}%</span>
+        <span className="panel-sub" aria-live="polite">
+          {st.growing ? 'Growing…' : `Vigour ${vig}%`}
+        </span>
       </div>
       <div className="meter" style={{ margin: '8px 0 10px' }} aria-label={`Vigour ${vig}%`} role="meter" aria-valuenow={vig} aria-valuemin={0} aria-valuemax={100}>
         <i style={{ width: `${vig}%`, background: vig < 50 ? 'var(--gold)' : undefined }} />
@@ -347,16 +341,16 @@ export function GrowPanel({ st }: { st: StudioState }) {
         </button>
       </div>
       <div className="row" style={{ marginTop: 10, gap: 6 }}>
-        <button className="btn small grow" onClick={() => grow(7)} data-testid="grow-week">
+        <button className="btn small grow" onClick={() => void grow(7)} disabled={st.growing} data-testid="grow-week">
           +1 week
         </button>
-        <button className="btn small grow" onClick={() => grow(30)}>
+        <button className="btn small grow" onClick={() => void grow(30)} disabled={st.growing}>
           +1 month
         </button>
-        <button className="btn small grow" onClick={() => grow(90)} data-testid="grow-season">
+        <button className="btn small grow" onClick={() => void grow(90)} disabled={st.growing} data-testid="grow-season">
           +1 season
         </button>
-        <button className="btn small grow" onClick={() => grow(360)}>
+        <button className="btn small grow" onClick={() => void grow(360)} disabled={st.growing}>
           +1 year
         </button>
       </div>
@@ -371,7 +365,10 @@ export function GrowPanel({ st }: { st: StudioState }) {
 
 // ------------------------------------------------------------- pot
 
-/** Range slider that previews live and records a single undo step on release. */
+/**
+ * Range slider that previews live and records exactly one undo step,
+ * measured from the state before the drag began.
+ */
 function LiveSlider(props: {
   label: string;
   min: number;
@@ -379,18 +376,20 @@ function LiveSlider(props: {
   step: number;
   value: number;
   format: (v: number) => string;
-  apply: (v: number) => void;
-  preview: (v: number) => void;
+  /** Build the edited work from a starting point and a slider value. */
+  build: (from: Workpiece, v: number) => Workpiece;
 }) {
   const [v, setV] = useState(props.value);
-  const dragging = useRef(false);
+  const drag = useRef<{ base: Workpiece; token: DragToken | null } | null>(null);
   useEffect(() => {
-    if (!dragging.current) setV(props.value);
+    if (!drag.current) setV(props.value);
   }, [props.value]);
   const finish = () => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    props.apply(v);
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    const final = props.build(d.base, v);
+    if (d.token) commitFrom(d.base, final, d.token);
   };
   return (
     <div className="slider">
@@ -405,13 +404,14 @@ function LiveSlider(props: {
         onChange={(e) => {
           const nv = Number(e.target.value);
           setV(nv);
-          if (!dragging.current) {
-            // Keyboard / click: commit directly.
-            props.apply(nv);
-          } else props.preview(nv);
+          const d = drag.current;
+          if (d) previewWork(props.build(d.base, nv), d.token ?? undefined);
+          // Keyboard / click without a drag: one committed step per change.
+          else commit(props.build(getState().studio!.history.present, nv));
         }}
         onPointerDown={() => {
-          dragging.current = true;
+          const base = getState().studio!.history.present;
+          drag.current = { base, token: beginDrag() };
         }}
         onPointerUp={finish}
         onPointerCancel={finish}
@@ -470,8 +470,7 @@ export function PotPanel({ st }: { st: StudioState }) {
         step={0.05}
         value={pot.size}
         format={(v) => `${Math.round(v * 100)}%`}
-        preview={(v) => previewWork({ ...getState().studio!.history.present, pot: { ...pot, size: v } })}
-        apply={(v) => setPot({ size: v })}
+        build={(from, v) => ({ ...from, pot: { ...from.pot, size: v } })}
       />
     </div>
   );
@@ -496,8 +495,7 @@ export function SurfacePanel({ st }: { st: StudioState }) {
           step={0.05}
           value={s.moss}
           format={(v) => `${Math.round(v * 100)}%`}
-          preview={(v) => previewWork({ ...getState().studio!.history.present, surface: { ...s, moss: v } })}
-          apply={(v) => commit({ ...getState().studio!.history.present, surface: { ...s, moss: v } })}
+          build={(from, v) => ({ ...from, surface: { ...from.surface, moss: v } })}
         />
       </div>
       <div className="row" style={{ gap: 6, marginTop: 6 }}>

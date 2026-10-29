@@ -50,4 +50,12 @@ Saves live on this device only (localStorage + IndexedDB):
 - Each tree has its own key and keeps a backup copy.
 - A corrupted tree is restored from its backup, or quarantined (never silently deleted).
 - Saves from a newer schema are left untouched.
-- Clearing website data removes saves.
+- Another open tab's edits are picked up rather than overwritten. Unlocks and best scores are merged across tabs, so neither tab can erase the other's progress.
+- **Settings → Back up collection** downloads a JSON backup, and **Restore backup** merges it back in. A tree whose id clashes is imported as a copy, never overwritten.
+- Installed Home Screen apps ask the browser for persistent storage. Clearing website data still removes saves, so keep a backup.
+
+## Performance notes
+
+- Growth simulation runs in a Web Worker, so advancing a year never freezes the UI. If workers are unavailable it falls back to the main thread.
+- The bark mesher writes into typed arrays. Edits are coalesced to one rebuild per frame, and bark uses coarser tessellation while a handle is being dragged.
+- Pixel ratio is capped at 2 and drops automatically on devices that can't keep up.

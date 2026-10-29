@@ -1,7 +1,7 @@
 import { generateSapling, type SaplingPreset } from '../tree/generate';
 import { type TreeLayout, bezierPoint, childrenIndex, computeLayout, layoutBounds } from '../tree/layout';
 import { SPECIES, YEAR_DAYS, seasonOf } from '../tree/species';
-import { type Care, DEFAULT_CARE, type SpeciesId, type TreeState } from '../tree/types';
+import { type Branch, type Care, DEFAULT_CARE, type SpeciesId, type TreeState } from '../tree/types';
 import { DEFAULT_POT, DEFAULT_SURFACE, type PotStyle, type SurfaceStyle } from './pots';
 
 export type TreeStyle =
@@ -190,4 +190,16 @@ export function styleOf(r: TreeRecord): TreeStyle {
 
 export function speciesName(id: SpeciesId): string {
   return SPECIES[id].name;
+}
+
+/** Plain-language name for a branch's role in the tree. */
+export function branchLabel(tree: TreeState, b: Branch): string {
+  if (b.kind === 'trunk') return b.parentId === null ? 'Trunk base' : 'Trunk (leader)';
+  let depth = 0;
+  let cur: Branch | undefined = b;
+  while (cur && cur.kind !== 'trunk') {
+    depth++;
+    cur = cur.parentId ? tree.branches[cur.parentId] : undefined;
+  }
+  return depth <= 1 ? 'Primary branch' : depth === 2 ? 'Secondary branch' : 'Twig';
 }

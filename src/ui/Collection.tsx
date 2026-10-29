@@ -2,7 +2,7 @@ import { dismissNotice, openSheet, openTree, readThumb } from '../app/actions';
 import { useStore } from '../app/store';
 import { STYLE_LABELS, ageYears, styleOf } from '../game/model';
 import { SPECIES } from '../tree/species';
-import { IconMore, IconPlus, IconStar, TreeMark } from './icons';
+import { IconMore, IconPlus, IconSettings, IconStar, TreeMark } from './icons';
 
 export function Collection() {
   const trees = useStore((s) => s.trees);
@@ -22,9 +22,14 @@ export function Collection() {
               {list.length} tree{list.length === 1 ? '' : 's'} in progress
             </p>
           </div>
-          <button className="btn primary" onClick={() => openSheet({ kind: 'newTree' })} data-testid="new-tree">
-            <IconPlus /> New tree
-          </button>
+          <div className="row" style={{ flexWrap: 'nowrap' }}>
+            <button className="icon-btn" onClick={() => openSheet({ kind: 'settings' })} aria-label="Settings and backups" data-testid="open-settings">
+              <IconSettings />
+            </button>
+            <button className="btn primary" onClick={() => openSheet({ kind: 'newTree' })} data-testid="new-tree">
+              <IconPlus /> New tree
+            </button>
+          </div>
         </div>
         {notice && (
           <div className="notice" role="status">

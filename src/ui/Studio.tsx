@@ -64,10 +64,10 @@ export function Studio() {
       {record.challenge ? <ChallengeHud record={record} st={st} /> : <Coach st={st} />}
       <div className="studio-bottom">
         <div className="edit-row">
-          <button className="icon-btn" onClick={undo} disabled={!st.history.past.length} aria-label="Undo" data-testid="undo">
+          <button className="icon-btn" onClick={undo} disabled={!st.history.past.length || st.dragging} aria-label="Undo" data-testid="undo">
             <IconUndo />
           </button>
-          <button className="icon-btn" onClick={redo} disabled={!st.history.future.length} aria-label="Redo" data-testid="redo">
+          <button className="icon-btn" onClick={redo} disabled={!st.history.future.length || st.dragging} aria-label="Redo" data-testid="redo">
             <IconRedo />
           </button>
           <span className="spacer" />

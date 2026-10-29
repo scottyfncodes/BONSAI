@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import { advanceOnboarding, commitFrom, previewWork, selectBranch, setCutT, setDragging } from '../app/actions';
+import { advanceOnboarding, beginDrag, commitFrom, previewWork, selectBranch, setCutT } from '../app/actions';
 import { onFx, view } from '../app/bus';
 import { getState } from '../app/store';
 import { sound } from '../audio/sound';
@@ -44,6 +44,7 @@ export function TreeViewport(props: ViewportProps) {
   const onStage = props.onStage;
   // Framing is fixed for the lifetime of a viewport; read it once at mount.
   const framingRef = useRef(props.framing);
+  const interactiveRef = useRef(interactive);
 
   // --- Create / dispose the 3D stage.
   useEffect(() => {
@@ -55,10 +56,16 @@ export function TreeViewport(props: ViewportProps) {
     }
     stage.reducedMotion = reducedMotion();
     if (framingRef.current) stage.rig.framing = framingRef.current;
+    // The Studio puts its tools on the right in landscape: keep the tree left.
+    if (interactiveRef.current) {
+      stage.landscapeFraming = { center: 0.5, fill: 0.72, x: 0.3 };
+      stage.resize();
+    }
     stage.onContextChange = (lost) => setStatus(lost ? 'lost' : 'ok');
     stageRef.current = stage;
     onStage?.(stage);
-    const offFrame = stage.onFrame(() => view.setYaw(stage.rig.pose.yaw));
+    // Only the Studio's camera defines the tree's "front" for scoring.
+    const offFrame = interactiveRef.current ? stage.onFrame(() => view.setYaw(stage.rig.pose.yaw)) : () => {};
     return () => {
       offFrame();
       onStage?.(null);
@@ -111,9 +118,16 @@ export function TreeViewport(props: ViewportProps) {
         else if (e.type === 'pulse') stage.pulse(e.id);
         else if (e.type === 'resetCamera') stage.frameTree(false);
         else if (e.type === 'frame') {
+          // The new tree's scene arrives in the next render; frame once it has.
           framed.current = false;
-          stage.frameTree(false);
-          framed.current = true;
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              if (!framed.current && stageRef.current) {
+                stageRef.current.frameTree(false);
+                framed.current = true;
+              }
+            }),
+          );
         } else if (e.type === 'orbit') stage.rig.orbit(e.yaw, e.pitch);
         else if (e.type === 'zoom') stage.rig.zoom(e.factor);
         stage.invalidate();
@@ -209,6 +223,12 @@ export function TreeViewport(props: ViewportProps) {
       else if (mode === 'pinch') mode = 'none'; // don't jump into orbit with the remaining finger
     };
 
+    const cancel = (e: PointerEvent) => {
+      // A system gesture took over: forget the touch, never treat it as a tap.
+      pts.delete(e.pointerId);
+      mode = 'none';
+    };
+
     const wheel = (e: WheelEvent) => {
       const stage = stageRef.current;
       if (!stage) return;
@@ -221,14 +241,14 @@ export function TreeViewport(props: ViewportProps) {
     host.addEventListener('pointerdown', down);
     host.addEventListener('pointermove', move);
     host.addEventListener('pointerup', up);
-    host.addEventListener('pointercancel', up);
+    host.addEventListener('pointercancel', cancel);
     host.addEventListener('wheel', wheel, { passive: false });
     host.addEventListener('contextmenu', ctx);
     return () => {
       host.removeEventListener('pointerdown', down);
       host.removeEventListener('pointermove', move);
       host.removeEventListener('pointerup', up);
-      host.removeEventListener('pointercancel', up);
+      host.removeEventListener('pointercancel', cancel);
       host.removeEventListener('wheel', wheel);
       host.removeEventListener('contextmenu', ctx);
     };
@@ -305,6 +325,12 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
       if (!l) return;
       place(tipRef.current, bezierPoint(l, 1));
       place(midRef.current, bezierPoint(l, 0.5));
+      // On short or foreshortened twigs the handles would overlap: keep only Aim.
+      if (midRef.current && midRef.current.style.visibility === 'visible') {
+        const a = stage.project(bezierPoint(l, 1));
+        const m = stage.project(bezierPoint(l, 0.5));
+        if (Math.hypot(a.x - m.x, a.y - m.y) < 44) midRef.current.style.visibility = 'hidden';
+      }
       place(cutRef.current, bezierPoint(l, Math.max(cutTRef.current, 0.03)));
     };
     update();
@@ -331,8 +357,10 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
     let lastLimited = false;
     let lastTickX = e.clientX;
     let lastTickY = e.clientY;
+    const token = beginDrag();
+    if (!token) return;
+    let finished = false;
     setActive(kind);
-    setDragging(true);
     stage.setTurntable(false);
 
     const onMove = (ev: PointerEvent) => {
@@ -340,7 +368,7 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
       const res = kind === 'tip' ? aimTip(base.tree, baseLayout, selected, world) : curveTo(base.tree, baseLayout, selected, world);
       if (!res.ok) return;
       live = { ...base, tree: res.tree };
-      previewWork(live);
+      if (!previewWork(live, token)) onUp();
       const limited = !!res.limited;
       if (limited && !lastLimited) {
         sound.creak();
@@ -354,24 +382,33 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
         lastTickY = ev.clientY;
       }
     };
-    const onUp = () => {
+    function onUp() {
+      if (finished) return;
+      finished = true;
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.removeEventListener('pointercancel', onUp);
+      el.removeEventListener('lostpointercapture', onUp);
       setActive(null);
       setResist(false);
       if (live === base) {
-        commitFrom(base, base);
+        commitFrom(base, base, token!);
         return;
       }
-      const released = releaseShape(base.tree, live.tree, selected);
+      const released = releaseShape(base.tree, live.tree, selected!);
+      if (released === base.tree) {
+        // Nothing really changed: no undo step, no save.
+        commitFrom(base, base, token!);
+        return;
+      }
       const finalWork = { ...base, tree: released };
-      const b = base.tree.branches[selected]!;
+      const sel = selected!;
+      const b = base.tree.branches[sel]!;
       const wired = !!b.wire;
-      const from = live.tree.branches[selected]!.shape;
-      const to = released.branches[selected]!.shape;
+      const from = live.tree.branches[sel]!.shape;
+      const to = released.branches[sel]!.shape;
       if (wired || reducedMotion() || holdFraction(base.tree, b) >= 0.99) {
-        commitFrom(base, finalWork);
+        commitFrom(base, finalWork, token!);
         if (wired) sound.confirm();
         else sound.rustle(0.3);
         return;
@@ -385,15 +422,21 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
         const e2 = 1 - Math.pow(1 - k, 3);
         if (k < 1) {
           const shape = lerpShape(from, to, e2);
-          previewWork({ ...base, tree: { ...live.tree, branches: { ...live.tree.branches, [selected]: { ...live.tree.branches[selected]!, shape } } } });
-          requestAnimationFrame(step);
-        } else commitFrom(base, finalWork);
+          const ok = previewWork(
+            { ...base, tree: { ...live.tree, branches: { ...live.tree.branches, [sel]: { ...live.tree.branches[sel]!, shape } } } },
+            token!,
+          );
+          if (ok) requestAnimationFrame(step);
+          else commitFrom(base, finalWork, token!);
+        } else commitFrom(base, finalWork, token!);
       };
       requestAnimationFrame(step);
-    };
+    }
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
     el.addEventListener('pointercancel', onUp);
+    // If the handle disappears mid-drag (e.g. a second finger deselects), still finish cleanly.
+    el.addEventListener('lostpointercapture', onUp);
   };
 
   const startCutDrag = (e: React.PointerEvent) => {
@@ -415,11 +458,13 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.removeEventListener('pointercancel', onUp);
+      el.removeEventListener('lostpointercapture', onUp);
       setActive(null);
     };
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
     el.addEventListener('pointercancel', onUp);
+    el.addEventListener('lostpointercapture', onUp);
   };
 
   if (!selected || !branch) return null;

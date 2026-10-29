@@ -66,8 +66,9 @@ export class Stage {
   private fxGroup = new THREE.Group();
   private barkMat: THREE.MeshStandardMaterial;
   private wireMat = new THREE.MeshStandardMaterial({ color: WIRE_COPPER, metalness: 0.65, roughness: 0.35 });
-  private overlayMat = new THREE.MeshBasicMaterial({ color: VERMILION, transparent: true, opacity: 0.5, depthWrite: false });
+  private overlayMat = new THREE.MeshBasicMaterial({ color: VERMILION, transparent: true, opacity: 0.5, depthWrite: false, toneMapped: false });
   private ringMat = new THREE.MeshBasicMaterial({ color: VERMILION });
+  private xrayMat = new THREE.MeshBasicMaterial({ color: GOLD, transparent: true, opacity: 0.32, depthTest: false, depthWrite: false, toneMapped: false });
   private foliage: FoliageMesh | null = null;
   private clusters: FoliageCluster[] = [];
   private input: SceneInput | null = null;
@@ -97,6 +98,8 @@ export class Stage {
       const probe = document.createElement('canvas');
       const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
       if (!gl) return null;
+      // Release the probe immediately: Safari caps the number of live contexts.
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
       return new Stage(container);
     } catch {
       return null;
@@ -186,14 +189,29 @@ export class Stage {
     this.loop();
   };
 
+  /** Framing used in landscape on short screens (tools sit on the right). */
+  landscapeFraming: { center: number; fill: number; x: number } | null = null;
+  private baseFraming: { center: number; fill: number; x?: number } | null = null;
+  private wasLandscape = false;
+
   resize(): void {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
-    this.rig.camera.aspect = w / h;
+    const cam = this.rig.camera;
+    cam.aspect = w / h;
     // Narrow portrait screens need a little more distance to fit the tree.
-    this.rig.camera.fov = w / h < 0.7 ? 34 : 30;
-    this.rig.camera.updateProjectionMatrix();
+    cam.fov = w / h < 0.7 ? 34 : 30;
+    this.baseFraming ??= this.rig.framing;
+    const landscape = !!this.landscapeFraming && w / h > 1.3 && h < 520;
+    this.rig.framing = landscape ? this.landscapeFraming! : this.baseFraming;
+    // Shift the projection centre sideways so the tree sits in the open area.
+    const x = this.rig.framing.x ?? 0.5;
+    if (Math.abs(x - 0.5) > 1e-3) cam.setViewOffset(w, h, (0.5 - x) * w, 0, w, h);
+    else cam.clearViewOffset();
+    cam.updateProjectionMatrix();
+    if (landscape !== this.wasLandscape && this.input) this.frameTree(false);
+    this.wasLandscape = landscape;
     this.invalidate();
   }
 
@@ -361,7 +379,8 @@ export class Stage {
         if (this.silhouette) {
           if (!this.originalMats.has(mesh)) this.originalMats.set(mesh, mesh.material);
           const orig = this.originalMats.get(mesh) as THREE.MeshStandardMaterial;
-          const key = `${orig.uuid}:${ink}`;
+          // Keyed by what matters for the cut-out, so rebuilt materials reuse entries.
+          const key = `${orig.map?.uuid ?? 'plain'}:${orig.alphaTest}:${orig.side}:${ink}`;
           let m = this.silhouetteMats.get(key);
           if (!m) {
             m = new THREE.MeshBasicMaterial({
@@ -415,21 +434,27 @@ export class Stage {
     }
     if (this.foliage) {
       if (removal) highlightFoliage(this.foliage, new Set(removal.removed), VERMILION, 0.6);
-      else highlightFoliage(this.foliage, selected ? new Set([selected]) : null, GOLD, 0.35);
+      else highlightFoliage(this.foliage, selected ? new Set([selected]) : null, GOLD, 0.55);
     }
     if (!ids.size) return;
     const geo = buildBarkGeometry(input.tree, input.layout, sp, {
       include: (id) => ids.has(id),
       range,
-      inflate: [1.12, 0.007],
+      // Thin twigs need a proportionally fatter shell to be seen at all.
+      inflate: removal ? [1.12, 0.007] : [1.25, 0.012],
       quality: 'low',
       plain: true,
     });
     this.overlayMat.color.copy(removal ? VERMILION : tone === 'wire' ? WIRE_COPPER : GOLD);
-    this.overlayMat.opacity = removal ? 0.55 : 0.42;
+    this.overlayMat.opacity = removal ? 0.55 : 0.72;
     const mesh = new THREE.Mesh(geo, this.overlayMat);
     mesh.renderOrder = 2;
     this.overlayGroup.add(mesh);
+    // A faint x-ray pass keeps the selection readable inside dense foliage.
+    this.xrayMat.color.copy(this.overlayMat.color);
+    const xray = new THREE.Mesh(geo, this.xrayMat);
+    xray.renderOrder = 4;
+    this.overlayGroup.add(xray);
     this.overlayDispose.push(() => geo.dispose());
 
     // A ring marks exactly where the blade will close.
@@ -666,6 +691,7 @@ export class Stage {
     this.renderer.getSize(oldSize);
     const oldDpr = this.renderer.getPixelRatio();
     const oldAspect = this.rig.camera.aspect;
+    const oldPose = { ...this.rig.pose, target: [...this.rig.pose.target] as [number, number, number] };
     const out = document.createElement('canvas');
     out.width = width;
     out.height = height;
@@ -711,6 +737,9 @@ export class Stage {
       this.renderer.setSize(oldSize.x, oldSize.y, false);
       this.rig.camera.aspect = oldAspect;
       this.rig.camera.updateProjectionMatrix();
+      // Don't let a background thumbnail snap a camera that is still easing.
+      this.rig.pose = oldPose;
+      this.rig.apply();
       this.overlayGroup.visible = true;
       this.fxGroup.visible = true;
       this.applyHighlight();
@@ -734,7 +763,11 @@ export class Stage {
     this.disposePot?.();
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestored);
+    for (const m of this.silhouetteMats.values()) m.dispose();
+    this.silhouetteMats.clear();
     this.renderer.dispose();
+    // Free the GPU context now rather than whenever GC gets to it.
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 }

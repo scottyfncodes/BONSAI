@@ -19,6 +19,7 @@ export function App() {
   const loaded = useStore((s) => s.loaded);
   const route = useStore((s) => s.route);
   const toasts = useStore((s) => s.toasts);
+  const announcement = useStore((s) => s.announcement);
   if (!loaded) return <div className="splash">Bonsai</div>;
   return (
     <div className="app">
@@ -42,6 +43,9 @@ export function App() {
       </nav>
       <PortraitMode />
       <Sheets />
+      <div className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </div>
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.tone}`}>

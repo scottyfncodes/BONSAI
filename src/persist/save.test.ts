@@ -2,7 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { createRecord } from '../game/model';
 import { prune } from '../tree/ops';
 import { MemoryKV } from './kv';
-import { KEYS, SCHEMA, defaultProfile, deleteTree, loadAll, migrate, saveProfile, saveTree, validateRecord } from './save';
+import {
+  EXPORT_FORMAT,
+  KEYS,
+  SCHEMA,
+  buildExport,
+  defaultProfile,
+  deleteTree,
+  loadAll,
+  migrate,
+  parseImport,
+  readRecord,
+  saveProfile,
+  saveTree,
+  treeIdFromKey,
+  treeKeyExists,
+  validateRecord,
+} from './save';
 
 const rec = (seed = 1) => createRecord({ species: 'juniper', seed, now: 1000 });
 
@@ -99,5 +115,65 @@ describe('save / load', () => {
     saveTree(kv, r, [r.id]);
     kv.remove(KEYS.index);
     expect(loadAll(kv).trees.map((t) => t.id)).toEqual([r.id]);
+  });
+});
+
+describe('backup export / import', () => {
+  it('round-trips a collection and keeps progress', () => {
+    const a = rec(20);
+    const b = rec(21);
+    const prof = { ...defaultProfile(1), unlocks: ['pot:drum'], claimed: ['less:1'], best: { 'less-maple': { score: 71, stars: 2 } } };
+    const text = JSON.stringify(buildExport(prof, [a, b]));
+    const out = parseImport(text);
+    expect(out.trees).toEqual([a, b]);
+    expect(out.skipped).toBe(0);
+    expect(out.profile.unlocks).toEqual(['pot:drum']);
+    expect(out.profile.best['less-maple']!.score).toBe(71);
+  });
+
+  it('skips damaged trees instead of failing the whole import', () => {
+    const a = rec(22);
+    const data = buildExport(defaultProfile(1), [a]) as unknown as { trees: unknown[] };
+    data.trees.push({ id: 'broken' });
+    const out = parseImport(JSON.stringify(data));
+    expect(out.trees.length).toBe(1);
+    expect(out.skipped).toBe(1);
+  });
+
+  it('rejects files that are not backups, or from a newer version', () => {
+    expect(() => parseImport('nope')).toThrow(/JSON/);
+    expect(() => parseImport('{"format":"other","trees":[]}')).toThrow(/BONSAI/);
+    expect(() => parseImport(JSON.stringify({ format: EXPORT_FORMAT, schema: SCHEMA + 1, trees: [] }))).toThrow(/newer/);
+  });
+});
+
+describe('recovery edge cases', () => {
+  it('quarantines both copies when neither can be read', () => {
+    const kv = new MemoryKV();
+    kv.set(KEYS.tree('tx'), 'bad main');
+    kv.set(KEYS.bak('tx'), 'bad backup');
+    expect(loadAll(kv).lost).toEqual(['tx']);
+    expect(kv.get(KEYS.quarantine('tx'))).toBe('bad main');
+    expect(kv.get(`${KEYS.quarantine('tx')}.bak`)).toBe('bad backup');
+    expect(treeKeyExists(kv, 'tx')).toBe(true);
+  });
+
+  it('frees thumbnails so progress can still be saved on a full disk', () => {
+    const kv = new MemoryKV();
+    kv.set(KEYS.thumb('t1'), 'x'.repeat(4000));
+    kv.quota = 4200;
+    const res = saveProfile(kv, { ...defaultProfile(1), unlocks: Array.from({ length: 40 }, (_, i) => `u${i}`) });
+    expect(res.ok).toBe(true);
+    expect(kv.get(KEYS.thumb('t1'))).toBeNull();
+  });
+
+  it('finds trees by storage key', () => {
+    expect(treeIdFromKey(KEYS.tree('abc'))).toBe('abc');
+    expect(treeIdFromKey(KEYS.bak('abc'))).toBeNull();
+    expect(treeIdFromKey(KEYS.profile)).toBeNull();
+    const kv = new MemoryKV();
+    const r = rec(23);
+    saveTree(kv, r, [r.id]);
+    expect(readRecord(kv, r.id)).toEqual(r);
   });
 });

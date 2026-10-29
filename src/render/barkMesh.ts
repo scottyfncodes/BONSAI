@@ -18,8 +18,6 @@ export interface BarkOptions {
   plain?: boolean;
 }
 
-const tmpColor = new THREE.Color();
-
 function radialSegments(r: number, q: 'high' | 'low'): number {
   const s = r > 0.1 ? 16 : r > 0.045 ? 11 : r > 0.02 ? 7 : 5;
   return q === 'low' ? Math.max(4, Math.round(s * 0.65)) : s;
@@ -29,6 +27,51 @@ function radialSegments(r: number, q: 'high' | 'low'): number {
 function flare(isRoot: boolean, s: number): number {
   if (!isRoot) return 1;
   return 1 + 0.85 * Math.exp(-Math.max(0, s + 0.05) / 0.09);
+}
+
+/** Append-only Float32/Uint32 buffer – avoids boxing every vertex in a JS array. */
+class Buf<T extends Float32Array | Uint32Array> {
+  data: T;
+  length = 0;
+  constructor(private make: (n: number) => T, initial = 4096) {
+    this.data = make(initial);
+  }
+  private grow(extra: number): void {
+    if (this.length + extra <= this.data.length) return;
+    const next = this.make(Math.max(this.data.length * 2, this.length + extra));
+    next.set(this.data.subarray(0, this.length));
+    this.data = next;
+  }
+  push2(a: number, b: number): void {
+    this.grow(2);
+    this.data[this.length++] = a;
+    this.data[this.length++] = b;
+  }
+  push3(a: number, b: number, c: number): void {
+    this.grow(3);
+    this.data[this.length++] = a;
+    this.data[this.length++] = b;
+    this.data[this.length++] = c;
+  }
+  view(): T {
+    return this.data.subarray(0, this.length) as T;
+  }
+}
+
+const trig = new Map<number, { cos: Float32Array; sin: Float32Array }>();
+function trigTable(radial: number) {
+  let t = trig.get(radial);
+  if (!t) {
+    const cos = new Float32Array(radial + 1);
+    const sin = new Float32Array(radial + 1);
+    for (let j = 0; j <= radial; j++) {
+      cos[j] = Math.cos((j / radial) * Math.PI * 2);
+      sin[j] = Math.sin((j / radial) * Math.PI * 2);
+    }
+    t = { cos, sin };
+    trig.set(radial, t);
+  }
+  return t;
 }
 
 interface Piece {
@@ -84,11 +127,11 @@ export function buildBarkGeometry(
   opts: BarkOptions = {},
 ): THREE.BufferGeometry {
   const q = opts.quality ?? 'high';
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const colors: number[] = [];
-  const indices: number[] = [];
+  const positions = new Buf((n) => new Float32Array(n), 16384);
+  const normals = new Buf((n) => new Float32Array(n), 16384);
+  const uvs = new Buf((n) => new Float32Array(n), 8192);
+  const colors = new Buf((n) => new Float32Array(n), opts.plain ? 16 : 16384);
+  const indices = new Buf((n) => new Uint32Array(n), 32768);
   const base = new THREE.Color(sp.bark.base);
   const dark = new THREE.Color(sp.bark.dark);
   const light = new THREE.Color(sp.bark.light);
@@ -146,6 +189,8 @@ export function buildBarkGeometry(
     let frame: Frame = transportFrame(fl.frame, samples[0]!.tan);
     let arc = 0;
     const startIndex = positions.length / 3;
+    const { cos: cosT, sin: sinT } = trigTable(radial);
+    const wobbly = fl.r0 > 0.05;
     samples.forEach((smp, i) => {
       frame = transportFrame(frame, smp.tan);
       if (i > 0) {
@@ -154,23 +199,25 @@ export function buildBarkGeometry(
       }
       const frac = i / Math.max(1, samples.length - 1);
       const shade = 1 - 0.18 * (1 - frac) * ageTone;
+      const cr = col.r * shade;
+      const cg = col.g * shade;
+      const cb = col.b * shade;
+      const [fnx, fny, fnz] = frame.n;
+      const [fbx, fby, fbz] = frame.b;
+      const [px, py, pz] = smp.p;
+      const v = arc / 0.35;
       for (let j = 0; j <= radial; j++) {
-        const a = (j / radial) * Math.PI * 2;
-        const ca = Math.cos(a);
-        const sa = Math.sin(a);
-        const nx = frame.n[0] * ca + frame.b[0] * sa;
-        const ny = frame.n[1] * ca + frame.b[1] * sa;
-        const nz = frame.n[2] * ca + frame.b[2] * sa;
+        const ca = cosT[j]!;
+        const sa = sinT[j]!;
+        const nx = fnx * ca + fbx * sa;
+        const ny = fny * ca + fby * sa;
+        const nz = fnz * ca + fbz * sa;
         // A little irregularity on thick wood so it isn't a perfect cylinder.
-        const wob = fl.r0 > 0.05 ? 1 + 0.07 * Math.sin(a * 3 + arc * 5.3 + first.length) * ageTone : 1;
-        const r = smp.r * wob;
-        positions.push(smp.p[0] + nx * r, smp.p[1] + ny * r, smp.p[2] + nz * r);
-        normals.push(nx, ny, nz);
-        uvs.push((j / radial) * uRepeat, arc / 0.35);
-        if (!opts.plain) {
-          tmpColor.copy(col).multiplyScalar(shade);
-          colors.push(tmpColor.r, tmpColor.g, tmpColor.b);
-        }
+        const r = wobbly ? smp.r * (1 + 0.07 * Math.sin(((j / radial) * Math.PI * 2) * 3 + arc * 5.3 + first.length) * ageTone) : smp.r;
+        positions.push3(px + nx * r, py + ny * r, pz + nz * r);
+        normals.push3(nx, ny, nz);
+        uvs.push2((j / radial) * uRepeat, v);
+        if (!opts.plain) colors.push3(cr, cg, cb);
       }
     });
     const rings = samples.length - 1;
@@ -178,26 +225,27 @@ export function buildBarkGeometry(
       for (let j = 0; j < radial; j++) {
         const a = startIndex + i * (radial + 1) + j;
         const c = a + radial + 1;
-        indices.push(a, a + 1, c, a + 1, c + 1, c);
+        indices.push3(a, a + 1, c);
+        indices.push3(a + 1, c + 1, c);
       }
     }
     // Cap the tip so open tubes never show their insides.
     const last = samples[samples.length - 1]!;
     const capIdx = positions.length / 3;
-    positions.push(last.p[0] + last.tan[0] * last.r * 0.6, last.p[1] + last.tan[1] * last.r * 0.6, last.p[2] + last.tan[2] * last.r * 0.6);
-    normals.push(last.tan[0], last.tan[1], last.tan[2]);
-    uvs.push(0, arc / 0.35);
-    if (!opts.plain) colors.push(col.r, col.g, col.b);
+    positions.push3(last.p[0] + last.tan[0] * last.r * 0.6, last.p[1] + last.tan[1] * last.r * 0.6, last.p[2] + last.tan[2] * last.r * 0.6);
+    normals.push3(last.tan[0], last.tan[1], last.tan[2]);
+    uvs.push2(0, arc / 0.35);
+    if (!opts.plain) colors.push3(col.r, col.g, col.b);
     const lastRing = startIndex + rings * (radial + 1);
-    for (let j = 0; j < radial; j++) indices.push(lastRing + j, lastRing + j + 1, capIdx);
+    for (let j = 0; j < radial; j++) indices.push3(lastRing + j, lastRing + j + 1, capIdx);
   }
 
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  if (!opts.plain) g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  g.setIndex(indices);
+  g.setAttribute('position', new THREE.BufferAttribute(positions.view(), 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(normals.view(), 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs.view(), 2));
+  if (!opts.plain) g.setAttribute('color', new THREE.BufferAttribute(colors.view(), 3));
+  g.setIndex(new THREE.BufferAttribute(indices.view(), 1));
   g.computeBoundingSphere();
   return g;
 }
