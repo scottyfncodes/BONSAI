@@ -74,6 +74,11 @@ function trigTable(radial: number) {
   return t;
 }
 
+/** Bleached, sun-silvered deadwood. */
+const SHARI = new THREE.Color('#e3dccf');
+
+const crossV = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
 interface Piece {
   id: BranchId;
   t0: number;
@@ -186,11 +191,68 @@ export function buildBarkGeometry(
     const ageTone = clamp((fl.r0 - 0.008) / 0.05, 0, 1);
     const col = new THREE.Color().copy(young).lerp(base, ageTone).lerp(tone < 0.5 ? dark : light, Math.abs(tone - 0.5) * 0.35);
 
-    let frame: Frame = transportFrame(fl.frame, samples[0]!.tan);
+    // Shimpaku junipers carry a twisting band of bleached deadwood (shari) up the trunk.
+    const shari =
+      sp.id === 'juniper' && first.kind === 'trunk' && first.parentId === null && !opts.plain
+        ? { a0: rng() * Math.PI * 2, twist: 0.9 + rng() * 0.8, width: 0.42 + rng() * 0.22 }
+        : null;
+    emitTube(samples, transportFrame(fl.frame, samples[0]!.tan), radial, uRepeat, col, ageTone, fl.r0 > 0.05 ? first.length : null, shari);
+  }
+
+  // Surface roots (nebari) radiate from the trunk base into the soil.
+  const root = tree.branches[tree.rootId];
+  const rootL = root ? layout.get(root.id) : undefined;
+  if (root && rootL && (!opts.include || opts.include(root.id)) && !opts.range?.has(root.id) && !opts.plain) {
+    const rng = rngFor(tree.seed, 'nebari');
+    const n = 5 + Math.floor(rng() * 3);
+    const r0 = rootL.r0;
+    const col = new THREE.Color(sp.bark.base).lerp(dark, 0.25);
+    const spin = rng() * Math.PI * 2;
+    for (let i = 0; i < n; i++) {
+      const az = spin + (i / n) * Math.PI * 2 + (rng() - 0.5) * 0.7;
+      // Short enough to stay inside even a shallow pot; they vanish under the soil.
+      const len = Math.min(r0 * (1.1 + rng() * 0.9), 0.36);
+      const rs = r0 * (0.32 + rng() * 0.16);
+      const wiggle = (rng() - 0.5) * 0.5;
+      const pts: { p: V3; tan: V3; r: number; tc: number }[] = [];
+      const N = q === 'low' ? 6 : 10;
+      for (let k = 0; k <= N; k++) {
+        const t = k / N;
+        const d = r0 * 0.35 + len * t;
+        const bend = wiggle * t * t;
+        const x = Math.cos(az + bend) * d;
+        const z = Math.sin(az + bend) * d;
+        // Rise slightly where the root leaves the trunk, then dive into the soil.
+        const y = 0.05 * (1 - t) - 0.09 * t * t + 0.012;
+        pts.push({ p: [x, y, z], tan: [0, 0, 0], r: (rs * Math.pow(1 - t, 1.2) + 0.004) * inflMul + inflAdd, tc: t });
+      }
+      for (let k = 0; k <= N; k++) {
+        const a2 = pts[Math.max(0, k - 1)]!.p;
+        const b2 = pts[Math.min(N, k + 1)]!.p;
+        pts[k]!.tan = norm3([b2[0] - a2[0], b2[1] - a2[1], b2[2] - a2[2]]);
+      }
+      const t0 = pts[0]!.tan;
+      const nrm = norm3([-t0[2], 0, t0[0]]);
+      const f0: Frame = { t: t0, n: nrm, b: norm3(crossV(t0, nrm)) };
+      emitTube(pts, f0, radialSegments(rs, q), Math.max(1, Math.round((Math.PI * 2 * rs) / 0.22)), col, 1, null, null);
+    }
+  }
+
+  /** Append one tapered tube following `samples` (parallel-transported rings, capped tip). */
+  function emitTube(
+    samples: { p: V3; tan: V3; r: number }[],
+    startFrame: Frame,
+    radial: number,
+    uRepeat: number,
+    col: THREE.Color,
+    ageTone: number,
+    wobbleSeed: number | null,
+    shari: { a0: number; twist: number; width: number } | null,
+  ): void {
+    let frame = startFrame;
     let arc = 0;
     const startIndex = positions.length / 3;
     const { cos: cosT, sin: sinT } = trigTable(radial);
-    const wobbly = fl.r0 > 0.05;
     samples.forEach((smp, i) => {
       frame = transportFrame(frame, smp.tan);
       if (i > 0) {
@@ -206,18 +268,34 @@ export function buildBarkGeometry(
       const [fbx, fby, fbz] = frame.b;
       const [px, py, pz] = smp.p;
       const v = arc / 0.35;
+      const shariCenter = shari ? shari.a0 + arc * shari.twist : 0;
+      const shariHalf = shari ? shari.width * (1 - frac * 0.55) : 0;
       for (let j = 0; j <= radial; j++) {
         const ca = cosT[j]!;
         const sa = sinT[j]!;
         const nx = fnx * ca + fbx * sa;
         const ny = fny * ca + fby * sa;
         const nz = fnz * ca + fbz * sa;
+        const ang = (j / radial) * Math.PI * 2;
         // A little irregularity on thick wood so it isn't a perfect cylinder.
-        const r = wobbly ? smp.r * (1 + 0.07 * Math.sin(((j / radial) * Math.PI * 2) * 3 + arc * 5.3 + first.length) * ageTone) : smp.r;
+        let r = wobbleSeed !== null ? smp.r * (1 + 0.07 * Math.sin(ang * 3 + arc * 5.3 + wobbleSeed) * ageTone) : smp.r;
+        let k = 0;
+        if (shari) {
+          let d = Math.abs(((ang - shariCenter) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+          if (d > Math.PI) d = Math.PI * 2 - d;
+          k = clamp((shariHalf - d) / (shariHalf * 0.35), 0, 1);
+          // Deadwood is carved slightly below the living bark.
+          r *= 1 - 0.06 * k;
+        }
         positions.push3(px + nx * r, py + ny * r, pz + nz * r);
         normals.push3(nx, ny, nz);
         uvs.push2((j / radial) * uRepeat, v);
-        if (!opts.plain) colors.push3(cr, cg, cb);
+        if (!opts.plain) {
+          if (k > 0) {
+            const g = 0.82 + 0.1 * Math.sin(arc * 9 + ang * 2);
+            colors.push3(cr + (SHARI.r * g - cr) * k, cg + (SHARI.g * g - cg) * k, cb + (SHARI.b * g - cb) * k);
+          } else colors.push3(cr, cg, cb);
+        }
       }
     });
     const rings = samples.length - 1;

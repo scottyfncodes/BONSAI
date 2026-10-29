@@ -45,18 +45,31 @@ function juniperBlob(): THREE.BufferGeometry {
   const pos = g.getAttribute('position');
   const colors: number[] = [];
   const r = mulberry32(17);
-  const bumps = Array.from({ length: 14 }, () => [r() * 2 - 1, r() * 2 - 1, r() * 2 - 1, 0.1 + r() * 0.16]);
+  // Broad lobes give the pad its cloud outline; many small ones read as foliage sprays.
+  const lobes = Array.from({ length: 12 }, () => [r() * 2 - 1, r() * 1.2 - 0.2, r() * 2 - 1, 0.1 + r() * 0.16, 6]);
+  const sprays = Array.from({ length: 46 }, () => [r() * 2 - 1, r() * 1.6 - 0.4, r() * 2 - 1, 0.035 + r() * 0.05, 28]);
+  const tmp = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).normalize();
     let d = 1;
-    for (const [bx, by, bz, h] of bumps) {
-      const dd = v.distanceTo(new THREE.Vector3(bx, by, bz).normalize());
-      d += h! * Math.exp(-dd * dd * 6);
+    let spray = 0;
+    for (const [bx, by, bz, h, k] of lobes) {
+      const dd = v.distanceTo(tmp.set(bx!, by!, bz!).normalize());
+      d += h! * Math.exp(-dd * dd * k!);
     }
-    d += Math.sin(v.x * 9 + v.z * 7) * 0.025;
-    pos.setXYZ(i, v.x * d, v.y * d * 0.62, v.z * d);
-    const shade = 0.62 + 0.38 * clamp((v.y + 1) / 2, 0, 1);
-    colors.push(shade, shade, shade);
+    for (const [bx, by, bz, h, k] of sprays) {
+      const dd = v.distanceTo(tmp.set(bx!, by!, bz!).normalize());
+      const e = h! * Math.exp(-dd * dd * k!);
+      d += e;
+      spray += e;
+    }
+    // Classic pad: flat, shadowed underside; soft dome on top.
+    const y = v.y < 0 ? v.y * 0.3 : v.y * 0.72;
+    pos.setXYZ(i, v.x * d, y * d, v.z * d);
+    // Baked occlusion: dark underside, lit crown, bright spray tips.
+    const up = clamp((v.y + 1) / 2, 0, 1);
+    const shade = 0.42 + 0.5 * up * up + spray * 3.2;
+    colors.push(shade, shade * 1.02, shade * 0.96);
   }
   g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   g.computeVertexNormals();
@@ -117,6 +130,75 @@ export interface FoliageMesh {
   dispose(): void;
 }
 
+/** Shared clock for foliage sway (seconds). Advanced by the stage while ambient motion runs. */
+export const windTime = { value: 0 };
+/** 0..1 snow lying on upward-facing foliage (winter). */
+export const snowAmount = { value: 0 };
+
+/**
+ * Sway foliage in the wind, after instancing, in world units: taller foliage
+ * moves more, neighbouring pads move together, the canopy never "swims".
+ */
+function addWind(
+  m: THREE.Material,
+  amp: number,
+  extraFragment?: (shader: { fragmentShader: string }) => void,
+  snowScale = 1,
+  /** Fine world-space grain that breaks up smooth surfaces into foliage sprays (0 = none). */
+  grain = 0,
+): void {
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uWindTime = windTime;
+    shader.uniforms.uSnow = snowAmount;
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFolPos;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+uniform float uSnow;
+varying vec3 vFolPos;
+float folHash( vec3 p ) { p = fract( p * 0.3183099 + 0.1 ); p *= 17.0; return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) ); }
+float folNoise( vec3 x ) {
+  vec3 i = floor( x ); vec3 f = fract( x ); f = f * f * ( 3.0 - 2.0 * f );
+  return mix( mix( mix( folHash( i ), folHash( i + vec3( 1, 0, 0 ) ), f.x ), mix( folHash( i + vec3( 0, 1, 0 ) ), folHash( i + vec3( 1, 1, 0 ) ), f.x ), f.y ),
+              mix( mix( folHash( i + vec3( 0, 0, 1 ) ), folHash( i + vec3( 1, 0, 1 ) ), f.x ), mix( folHash( i + vec3( 0, 1, 1 ) ), folHash( i + 1.0 ), f.x ), f.y ), f.z );
+}`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+  // Foliage sprays: crevices fall dark, tips catch the light.
+  float g1 = folNoise( vFolPos * 38.0 );
+  float g2 = folNoise( vFolPos * 95.0 );
+  diffuseColor.rgb *= mix( 1.0, 0.62 + 0.5 * g1 + 0.22 * g2, ${grain.toFixed(2)} );
+  // Snow settles on whatever faces the sky.
+  float upness = dot( normalize( vNormal ), normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) );
+  diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.93, 0.95, 0.97 ), uSnow * ${snowScale.toFixed(2)} * smoothstep( 0.35, 0.8, upness ) );`,
+      );
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uWindTime;')
+      .replace(
+        '#include <project_vertex>',
+        `vec4 mvPosition = vec4( transformed, 1.0 );
+#ifdef USE_INSTANCING
+  mvPosition = instanceMatrix * mvPosition;
+#endif
+  {
+    vec3 ip = mvPosition.xyz;
+    float h = clamp( ip.y / 3.0, 0.0, 1.3 );
+    float gust = 0.65 + 0.35 * sin( uWindTime * 0.31 );
+    float sx = sin( uWindTime * 1.15 + ip.x * 1.7 + ip.z * 1.1 ) * 0.7 + sin( uWindTime * 2.9 + ip.z * 3.3 ) * 0.3;
+    float sz = cos( uWindTime * 0.95 + ip.z * 1.9 - ip.x * 0.8 ) * 0.6;
+    mvPosition.xyz += vec3( sx, sx * 0.25, sz ) * ${amp.toFixed(4)} * h * gust;
+  }
+  vFolPos = mvPosition.xyz;
+  mvPosition = modelViewMatrix * mvPosition;
+  gl_Position = projectionMatrix * mvPosition;`,
+      );
+    extraFragment?.(shader);
+  };
+}
+
 const materials = new Map<string, THREE.Material>();
 function foliageMaterial(sp: SpeciesDef): THREE.Material {
   let m = materials.get(sp.id);
@@ -131,16 +213,18 @@ function foliageMaterial(sp: SpeciesDef): THREE.Material {
     });
     // Thin leaves transmit light: shade both faces with the upward normal
     // instead of letting back faces go black.
-    m.onBeforeCompile = (shader) => {
+    addWind(m, 0.03, (shader) => {
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <normal_fragment_begin>',
         '#include <normal_fragment_begin>\n  normal = normalize( vNormal );',
       );
-    };
+    });
   } else if (sp.foliage.kind === 'needle') {
     m = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.8 });
+    addWind(m, 0.018, undefined, 0.35, 0.35);
   } else {
     m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 });
+    addWind(m, 0.012, undefined, 1, 1);
   }
   materials.set(sp.id, m);
   return m;
@@ -157,13 +241,14 @@ export function buildFoliage(
   const base = foliageColor(sp, day);
   const presence = leafPresence(sp, day);
   const kind = sp.foliage.kind;
-  const perCluster = kind === 'scale' ? 5 : kind === 'palmate' ? 16 : 3;
+  const perCluster = kind === 'scale' ? 3 : kind === 'palmate' ? 16 : 3;
   const budget = Math.min(MAX_INSTANCES, clusters.length * perCluster);
   const each = Math.max(1, Math.floor(budget / Math.max(1, clusters.length)));
   const geo = kind === 'scale' ? juniperBlob() : kind === 'palmate' ? leafCard() : pineTuft();
   const mesh = new THREE.InstancedMesh(geo, foliageMaterial(sp), Math.max(1, clusters.length * each));
   mesh.castShadow = true;
-  mesh.receiveShadow = false;
+  // Upper pads shade the ones beneath: the depth that makes tiers read.
+  mesh.receiveShadow = true;
   const owners: BranchId[] = [];
   const baseColors: THREE.Color[] = [];
   const m = new THREE.Matrix4();
@@ -181,8 +266,8 @@ export function buildFoliage(
       if (kind === 'palmate' && r() > presence) continue;
       if (kind === 'scale') {
         p.set(c.pos[0] + (r() - 0.5) * c.size * 1.3, c.pos[1] + (r() - 0.5) * c.size * 0.35, c.pos[2] + (r() - 0.5) * c.size * 1.3);
-        const sc = c.size * (0.55 + r() * 0.45);
-        s.set(sc * (1 + r() * 0.3), sc, sc * (1 + r() * 0.3));
+        const sc = c.size * (0.7 + r() * 0.45);
+        s.set(sc * (1.05 + r() * 0.3), sc, sc * (1.05 + r() * 0.3));
         e.set(0, r() * Math.PI * 2, 0);
       } else if (kind === 'palmate') {
         const a = r() * Math.PI * 2;
@@ -203,6 +288,8 @@ export function buildFoliage(
       m.compose(p, q, s);
       mesh.setMatrixAt(n, m);
       let col = base.clone();
+      // Inner and lower parts of a pad sit in its own shade.
+      if (kind === 'scale') col.multiplyScalar(0.82 + 0.3 * clamp((p.y - c.pos[1]) / c.size + 0.5, 0, 1));
       if (kind === 'palmate' && seasonOf(day) === 'autumn') {
         col = autumnPalette[Math.floor(r() * autumnPalette.length)]!.clone();
       }

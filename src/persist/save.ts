@@ -30,6 +30,8 @@ export interface Settings {
   volume: number;
   ambient: boolean;
   haptics: boolean;
+  /** Wind in the foliage and drifting seasonal particles. */
+  motion: boolean;
 }
 
 export interface Profile {
@@ -51,7 +53,7 @@ export const defaultProfile = (now = Date.now()): Profile => ({
   claimed: [],
   best: {},
   activeTreeId: null,
-  settings: { muted: false, volume: 0.8, ambient: true, haptics: true },
+  settings: { muted: false, volume: 0.8, ambient: true, haptics: true, motion: true },
   onboarding: 0,
   createdAt: now,
 });

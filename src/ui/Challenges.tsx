@@ -3,7 +3,8 @@ import { useStore } from '../app/store';
 import { CHALLENGES } from '../game/challenges';
 import { unlockDef } from '../game/unlocks';
 import { SPECIES } from '../tree/species';
-import { IconCheck, IconChevron, IconLock, TreeMark } from './icons';
+import { ChallengeArt, Seal } from './art';
+import { IconCheck, IconChevron, IconLock } from './icons';
 import { Stars } from './Studio';
 
 export function Challenges() {
@@ -14,7 +15,9 @@ export function Challenges() {
       <div className="page-inner">
         <div className="page-head">
           <div>
-            <div className="eyebrow">Artistic challenges</div>
+            <div className="eyebrow">
+              <Seal size={22} /> Artistic challenges
+            </div>
             <h1>Challenges</h1>
             <p>Each has many right answers. Scores explain themselves.</p>
           </div>
@@ -24,7 +27,7 @@ export function Challenges() {
           return (
             <section key={def.id} className="challenge" aria-labelledby={`ch-${def.id}`}>
               <div className={`challenge-hero hero-${def.id}`}>
-                <TreeMark className="art" />
+                <ChallengeArt variant={def.id} />
                 <Stars n={bestStars} />
                 <h2 id={`ch-${def.id}`}>{def.title}</h2>
                 <p>{def.tagline}</p>

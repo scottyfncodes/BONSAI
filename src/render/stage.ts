@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { PotStyle, SurfaceStyle } from '../game/pots';
 import { potDims } from '../game/pots';
 import { type TreeLayout, bezierPoint, frameAt, layoutBounds, radiusAt } from '../tree/layout';
@@ -8,10 +9,12 @@ import type { BranchId, TreeState } from '../tree/types';
 import type { V3 } from '../tree/vec';
 import { buildBarkGeometry, buildWireGeometry } from './barkMesh';
 import { CameraRig } from './camera';
-import { type FoliageCluster, type FoliageMesh, buildFoliage, foliageClusters, highlightFoliage } from './foliage';
+import { type FoliageCluster, type FoliageMesh, buildFoliage, foliageClusters, foliageColor, highlightFoliage, snowAmount, windTime } from './foliage';
 import { buildMarks } from './marks';
+import { SeasonParticles, petalTexture } from './particles';
+import { PORTRAIT_SCENERY, type Scenery, paintScenery } from './scenery';
 import { buildPot } from './potMesh';
-import { barkTexture, radialTexture } from './textures';
+import { barkTexture, benchTexture, fadeTexture, mapleLeafTexture, radialTexture } from './textures';
 
 export interface SceneInput {
   tree: TreeState;
@@ -35,20 +38,25 @@ export interface PickResult {
 export interface Background {
   id: string;
   name: string;
-  /** CSS gradient for the live view. */
+  scenery: Scenery;
+  /** CSS preview for the swatch. */
   css: string;
-  /** Colour stops for exported portraits (top → bottom). */
-  stops: [string, string];
   ink: string;
   unlock?: string;
 }
 
+const bg = (id: string, name: string, unlock?: string): Background => {
+  const sc = PORTRAIT_SCENERY[id]!;
+  const sun = sc.sun ? `radial-gradient(circle at 64% 30%, ${sc.sun.color} 0 14%, transparent 15%), ` : '';
+  return { id, name, unlock, scenery: sc, ink: sc.ink, css: `${sun}linear-gradient(180deg, ${sc.sky[0]} 0%, ${sc.sky[1]} 55%, ${sc.sky[2]} 100%)` };
+};
+
 export const BACKGROUNDS: Background[] = [
-  { id: 'paper', name: 'Rice paper', css: 'radial-gradient(120% 90% at 50% 30%, #fbf7ee 0%, #f1eadb 60%, #e4dac6 100%)', stops: ['#fbf7ee', '#e2d7c2'], ink: '#2b2622' },
-  { id: 'mist', name: 'Morning mist', css: 'linear-gradient(180deg, #e9eef0 0%, #dfe5e2 55%, #cfd6cf 100%)', stops: ['#eef2f3', '#cbd3cb'], ink: '#26302c' },
-  { id: 'dusk', name: 'Late light', css: 'linear-gradient(180deg, #f3d9b9 0%, #e7c2a0 50%, #c99b82 100%)', stops: ['#f5dcbd', '#c39580'], ink: '#3a2219' },
-  { id: 'ink', name: 'Ink', css: 'radial-gradient(120% 90% at 50% 30%, #3a3633 0%, #23201e 70%, #181614 100%)', stops: ['#3b3734', '#141211'], ink: '#f3ecdf', unlock: 'bg:ink' },
-  { id: 'moss', name: 'Moss garden', css: 'linear-gradient(180deg, #dfe6cf 0%, #c3cfa6 60%, #9fae7c 100%)', stops: ['#e2e8d2', '#99a877'], ink: '#24301c', unlock: 'bg:moss' },
+  bg('paper', 'Rice paper'),
+  bg('mist', 'Morning mist'),
+  bg('dusk', 'Late light'),
+  bg('ink', 'Ink night', 'bg:ink'),
+  bg('moss', 'Moss garden', 'bg:moss'),
 ];
 
 const VERMILION = new THREE.Color('#d2492f');
@@ -87,9 +95,14 @@ export class Stage {
   private sun: THREE.DirectionalLight;
   private ground: THREE.Mesh;
   private contact: THREE.Mesh;
+  private floorMat: THREE.MeshStandardMaterial;
   reducedMotion = false;
   cutRing: THREE.Mesh | null = null;
   private silhouette = false;
+  /** Gentle wind and seasonal particles; rendered at a capped frame rate. */
+  private ambient = false;
+  private particles: SeasonParticles | null = null;
+  private ambientAccum = 0;
   private silhouetteMats = new Map<string, THREE.Material>();
   private originalMats = new WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>();
 
@@ -113,9 +126,13 @@ export class Stage {
     this.renderer.setPixelRatio(this.dpr);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.02;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Shadows depend on geometry and the light, not the camera: only redraw
+    // the shadow map when the tree or pot changes (not every orbit/wind frame).
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
     this.renderer.setClearColor(0x000000, 0);
     const canvas = this.renderer.domElement;
     canvas.style.display = 'block';
@@ -128,7 +145,7 @@ export class Stage {
     this.rig = new CameraRig(1);
     this.barkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0 });
 
-    this.hemi = new THREE.HemisphereLight('#fff6e6', '#6b5a48', 1.25);
+    this.hemi = new THREE.HemisphereLight('#fff6e6', '#5e4c3c', 1.0);
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight('#fff1dc', 2.3);
     this.sun.position.set(3.5, 7, 4.5);
@@ -143,16 +160,32 @@ export class Stage {
     sc.far = 20;
     this.sun.shadow.bias = -0.0008;
     this.sun.shadow.normalBias = 0.02;
-    this.sun.shadow.radius = 4;
+    this.sun.shadow.radius = 5;
     this.scene.add(this.sun);
     const fill = new THREE.DirectionalLight('#dfe8ff', 0.55);
     fill.position.set(-5, 3, -2);
     this.scene.add(fill);
-    const rim = new THREE.DirectionalLight('#ffe4c4', 0.7);
+    // Soft studio reflections for glazes, polished wood and the shine on leaves.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environment = env;
+    this.scene.environmentIntensity = 0.16;
+    this.disposers.push(() => env.dispose());
+    const rim = new THREE.DirectionalLight('#ffe4c4', 1.1);
     rim.position.set(-1, 4, -6);
     this.scene.add(rim);
 
-    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShadowMaterial({ opacity: 0.13 }));
+    // The bench: soft boards that fade into the painted backdrop and catch shadows.
+    this.floorMat = new THREE.MeshStandardMaterial({
+      color: '#e6dccb',
+      map: benchTexture(),
+      alphaMap: fadeTexture(),
+      transparent: true,
+      depthWrite: false,
+      roughness: 0.95,
+    });
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), this.floorMat);
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
@@ -183,6 +216,7 @@ export class Stage {
   };
 
   private onContextRestored = () => {
+    this.renderer.shadowMap.needsUpdate = true;
     this.potKey = '';
     if (this.input) this.setScene(this.input, true);
     this.onContextChange?.(false);
@@ -226,9 +260,21 @@ export class Stage {
     };
   }
 
+  /** Not on screen (another tab, or covered by Portrait mode): render nothing. */
+  paused = false;
+
+  setPaused(p: boolean): void {
+    if (this.paused === p) return;
+    this.paused = p;
+    if (!p) {
+      this.last = performance.now();
+      this.invalidate();
+    }
+  }
+
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
-    if (document.hidden) return;
+    if (document.hidden || this.paused) return;
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
@@ -240,6 +286,16 @@ export class Stage {
       this.dirty = true;
     }
     let moving = this.rig.update(dt, this.reducedMotion);
+    if (this.ambient && !this.reducedMotion) {
+      windTime.value += dt;
+      this.particles?.update(dt);
+      // ~30 fps is plenty for drifting leaves and keeps the battery happy.
+      this.ambientAccum += dt;
+      if (this.ambientAccum >= 1 / 30) {
+        this.ambientAccum = 0;
+        this.dirty = true;
+      }
+    }
     if (this.effects.length) {
       this.effects = this.effects.filter((e) => e.update(dt));
       moving = true;
@@ -278,11 +334,12 @@ export class Stage {
       // Coalesce: many pointer moves per frame collapse into one rebuild.
       this.pendingTree = true;
     }
-    const potKey = JSON.stringify([input.pot, input.surface, input.tree.seed]);
+    const potKey = JSON.stringify([input.pot, input.surface, input.tree.seed, seasonOf(input.tree.day) === 'winter']);
     if (force || potKey !== this.potKey) {
       this.potKey = potKey;
       this.rebuildPot();
     }
+    this.syncParticles();
     this.applyHighlight();
     if (this.silhouette) this.applySilhouette();
     this.invalidate();
@@ -316,6 +373,7 @@ export class Stage {
     this.barkMat.color.set('#ffffff').multiplyScalar(1.3);
     this.barkMat.needsUpdate = true;
 
+    this.renderer.shadowMap.needsUpdate = true;
     const barkGeo = buildBarkGeometry(input.tree, input.layout, sp, { quality: this.interactiveQuality ? 'low' : 'high' });
     const bark = new THREE.Mesh(barkGeo, this.barkMat);
     bark.castShadow = true;
@@ -341,8 +399,9 @@ export class Stage {
     this.treeGroup.add(marks.group);
     this.disposeTree.push(() => marks.dispose());
 
-    // Season shifts the light a touch.
+    // Season shifts the light a touch – and in winter, snow settles on the pads.
     const season = seasonOf(input.tree.day);
+    snowAmount.value = season === 'winter' ? 0.85 : 0;
     this.hemi.color.set(season === 'autumn' ? '#ffe9d0' : season === 'winter' ? '#eef2f7' : '#fff6e6');
     this.sun.color.set(season === 'autumn' ? '#ffdcb5' : season === 'winter' ? '#f2f5ff' : '#fff1dc');
   }
@@ -351,14 +410,15 @@ export class Stage {
     this.disposePot?.();
     this.potGroup.clear();
     const input = this.input!;
-    const p = buildPot(input.pot, input.surface, input.tree.seed);
+    this.renderer.shadowMap.needsUpdate = true;
+    const p = buildPot(input.pot, input.surface, input.tree.seed, seasonOf(input.tree.day) === 'winter');
     this.potGroup.add(p.group);
     this.disposePot = p.dispose;
     const d = potDims(input.pot);
-    const groundY = 0.05 - 0.02 - d.height - 0.08;
+    const groundY = p.groundY;
     this.ground.position.y = groundY;
     this.contact.position.y = groundY + 0.002;
-    this.contact.scale.set(d.width * 1.5, d.depthZ * 1.7, 1);
+    this.contact.scale.set(d.width * 1.9, d.depthZ * 2.1, 1);
   }
 
   /** Ink-cutout view: judge the outline without colour or light. */
@@ -367,6 +427,7 @@ export class Stage {
     this.applySilhouette(ink);
     this.ground.visible = !on;
     this.contact.visible = !on;
+    this.syncParticles();
     this.invalidate();
   }
 
@@ -397,6 +458,36 @@ export class Stage {
         }
       });
     }
+  }
+
+  /** Turn living motion (wind, seasonal particles) on or off. */
+  setAmbient(on: boolean): void {
+    this.ambient = on && !this.reducedMotion;
+    this.syncParticles();
+    this.invalidate();
+  }
+
+  private syncParticles(): void {
+    const season = this.input ? seasonOf(this.input.tree.day) : null;
+    const want = this.ambient && !this.silhouette && season ? season : null;
+    if (this.particles && (!want || this.particles.season !== want || Math.abs(this.ground.position.y - this.particlesFloor) > 1e-3)) {
+      this.fxGroup.remove(this.particles.mesh);
+      this.particles.dispose();
+      this.particles = null;
+    }
+    if (want && !this.particles) {
+      this.particles = new SeasonParticles(want, this.ground.position.y);
+      this.particlesFloor = this.ground.position.y;
+      this.fxGroup.add(this.particles.mesh);
+    }
+  }
+
+  private particlesFloor = 0;
+
+  /** Tint the bench to sit naturally in the current scenery. */
+  setFloorColor(color: string): void {
+    this.floorMat.color.set(color).multiplyScalar(0.97);
+    this.invalidate();
   }
 
   setTurntable(on: boolean): void {
@@ -508,6 +599,7 @@ export class Stage {
     group.position.set(-pivot[0], -pivot[1], -pivot[2]);
     holder.add(group);
     this.fxGroup.add(holder);
+    if (preview.foliageFraction > 0.003 && clusters.length) this.snipBurst(pivot, sp);
     const out = new THREE.Vector3(pivot[0], 0, pivot[2]).normalize().multiplyScalar(0.6);
     const vel = new THREE.Vector3(out.x, 0.6, out.z);
     const spinAxis = new THREE.Vector3(-out.z, 0, out.x).normalize();
@@ -539,6 +631,61 @@ export class Stage {
       },
     });
     this.invalidate();
+  }
+
+  /** A few leaves or needles knocked loose by the blades, fluttering down. */
+  private snipBurst(at: V3, sp: (typeof SPECIES)[keyof typeof SPECIES]): void {
+    const n = 9;
+    const geo = new THREE.PlaneGeometry(1, 1);
+    const mat = new THREE.MeshBasicMaterial({
+      map: sp.foliage.kind === 'palmate' ? mapleLeafTexture() : petalTexture(),
+      transparent: true,
+      alphaTest: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const mesh = new THREE.InstancedMesh(geo, mat, n);
+    mesh.frustumCulled = false;
+    const base = foliageColor(sp, this.input?.tree.day ?? 0);
+    const parts = Array.from({ length: n }, (_, i) => {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.6;
+      mesh.setColorAt(i, base.clone().multiplyScalar(0.8 + Math.random() * 0.4));
+      return {
+        p: new THREE.Vector3(...at),
+        v: new THREE.Vector3(Math.cos(a) * (0.5 + Math.random() * 0.6), 0.4 + Math.random() * 0.9, Math.sin(a) * (0.5 + Math.random() * 0.6)),
+        r: new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6),
+        s: (sp.foliage.kind === 'palmate' ? 0.06 : 0.035) * (0.7 + Math.random() * 0.6),
+      };
+    });
+    this.fxGroup.add(mesh);
+    const dummy = new THREE.Object3D();
+    let age = 0;
+    this.effects.push({
+      update: (dt) => {
+        age += dt;
+        parts.forEach((q, i) => {
+          q.v.y -= 2.4 * dt;
+          q.v.multiplyScalar(1 - dt * 1.6);
+          q.p.addScaledVector(q.v, dt);
+          q.r.x += dt * 6;
+          q.r.z += dt * 4;
+          dummy.position.copy(q.p);
+          dummy.rotation.copy(q.r);
+          dummy.scale.setScalar(q.s * Math.max(0, 1 - Math.max(0, age - 0.9) / 0.5));
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (age > 1.4) {
+          this.fxGroup.remove(mesh);
+          geo.dispose();
+          mat.dispose();
+          return false;
+        }
+        return true;
+      },
+    });
   }
 
   /** Brief pulse on a branch – feedback for wire/shape confirmation. */
@@ -677,13 +824,46 @@ export class Stage {
     caption?: { title: string; lines: string[] };
     type?: 'image/png' | 'image/jpeg';
   }): Promise<Blob | null> {
-    const out = this.captureCanvas(opts);
+    const out = await this.captureCanvas(opts);
     return new Promise<Blob | null>((resolve) => out.toBlob((b) => resolve(b), opts.type ?? 'image/png', 0.9));
   }
 
-  /** Synchronous part of capture: render offscreen-sized, paint, restore. */
-  captureCanvas(opts: { width: number; height: number; background: Background; caption?: { title: string; lines: string[] } }): HTMLCanvasElement {
+  /** Paint the backdrop, then render the tree at export size on top (UI never included). */
+  async captureCanvas(opts: {
+    width: number;
+    height: number;
+    background: Background;
+    caption?: { title: string; lines: string[] };
+  }): Promise<HTMLCanvasElement> {
     const { width, height, background, caption } = opts;
+    const out = document.createElement('canvas');
+    out.width = width;
+    out.height = height;
+    const g = out.getContext('2d')!;
+    // Paint the scenery on a scratch canvas first: if this browser taints a
+    // canvas that has SVG drawn into it, fall back to a plain sky gradient.
+    const scratch = document.createElement('canvas');
+    scratch.width = width;
+    scratch.height = height;
+    const sg = scratch.getContext('2d')!;
+    await paintScenery(sg, background.scenery, width, height, this.rig.goal.yaw);
+    let clean = true;
+    try {
+      sg.getImageData(0, 0, 1, 1);
+    } catch {
+      clean = false;
+    }
+    if (clean) g.drawImage(scratch, 0, 0);
+    else {
+      const [top, mid, bottom] = background.scenery.sky;
+      const grad = g.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, top);
+      grad.addColorStop(0.55, mid);
+      grad.addColorStop(1, bottom);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, width, height);
+    }
+    // Everything below is synchronous so the WebGL buffer is still valid when copied.
     this.overlayGroup.visible = false;
     this.fxGroup.visible = false;
     if (this.foliage) highlightFoliage(this.foliage, null, GOLD, 0);
@@ -692,9 +872,6 @@ export class Stage {
     const oldDpr = this.renderer.getPixelRatio();
     const oldAspect = this.rig.camera.aspect;
     const oldPose = { ...this.rig.pose, target: [...this.rig.pose.target] as [number, number, number] };
-    const out = document.createElement('canvas');
-    out.width = width;
-    out.height = height;
     try {
       this.renderer.setPixelRatio(1);
       this.renderer.setSize(width, height, false);
@@ -703,18 +880,12 @@ export class Stage {
       this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
       this.rig.apply();
       this.renderer.render(this.scene, this.rig.camera);
-      const g = out.getContext('2d')!;
-      const grad = g.createLinearGradient(0, 0, 0, height);
-      grad.addColorStop(0, background.stops[0]);
-      grad.addColorStop(1, background.stops[1]);
-      g.fillStyle = grad;
-      g.fillRect(0, 0, width, height);
+      g.drawImage(this.renderer.domElement, 0, 0, width, height);
       const vig = g.createRadialGradient(width / 2, height * 0.42, height * 0.2, width / 2, height * 0.5, height * 0.8);
       vig.addColorStop(0, 'rgba(0,0,0,0)');
       vig.addColorStop(1, 'rgba(0,0,0,0.12)');
       g.fillStyle = vig;
       g.fillRect(0, 0, width, height);
-      g.drawImage(this.renderer.domElement, 0, 0, width, height);
       if (caption) {
         const pad = Math.round(width * 0.07);
         const lineH = Math.round(width * 0.042);
@@ -726,10 +897,9 @@ export class Stage {
         g.font = `500 ${Math.round(width * 0.026)}px "Inter Variable", "Inter", system-ui, sans-serif`;
         g.globalAlpha = 0.72;
         caption.lines.forEach((line, i) => g.fillText(line, pad, titleY + lineH * (i + 1)));
-        g.globalAlpha = 0.5;
-        g.font = `650 ${Math.round(width * 0.019)}px "Inter Variable", "Inter", system-ui, sans-serif`;
-        const mark = 'BONSAI · THE STUDIO';
-        g.fillText(mark, width - pad - g.measureText(mark).width, pad + Math.round(width * 0.02));
+        g.globalAlpha = 1;
+        // The studio's seal, pressed into the corner like a print.
+        drawSeal(g, width - pad - Math.round(width * 0.075), pad, Math.round(width * 0.075));
         g.globalAlpha = 1;
       }
     } finally {
@@ -750,8 +920,8 @@ export class Stage {
   }
 
   /** Small JPEG thumbnail of the current view for collection cards. */
-  thumbnail(size = 320): string {
-    const c = this.captureCanvas({ width: size, height: Math.round(size * 1.25), background: BACKGROUNDS[0]! });
+  async thumbnail(scenery: Scenery, size = 320): Promise<string> {
+    const c = await this.captureCanvas({ width: size, height: Math.round(size * 1.25), background: { ...BACKGROUNDS[0]!, scenery } });
     return c.toDataURL('image/jpeg', 0.78);
   }
 
@@ -765,9 +935,32 @@ export class Stage {
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestored);
     for (const m of this.silhouetteMats.values()) m.dispose();
     this.silhouetteMats.clear();
+    this.particles?.dispose();
     this.renderer.dispose();
     // Free the GPU context now rather than whenever GC gets to it.
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
+}
+
+/** Paint the vermilion 盆栽 hanko seal onto a 2D canvas. */
+function drawSeal(g: CanvasRenderingContext2D, x: number, y: number, size: number): void {
+  const r = size * 0.13;
+  g.save();
+  g.globalAlpha = 0.92;
+  g.fillStyle = '#c2412a';
+  g.beginPath();
+  g.roundRect(x, y, size, size, r);
+  g.fill();
+  g.strokeStyle = 'rgba(251,238,224,0.55)';
+  g.lineWidth = Math.max(1, size * 0.025);
+  g.beginPath();
+  g.roundRect(x + size * 0.08, y + size * 0.08, size * 0.84, size * 0.84, r * 0.6);
+  g.stroke();
+  g.fillStyle = '#fbf3e6';
+  g.textAlign = 'center';
+  g.font = `700 ${Math.round(size * 0.34)}px "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif`;
+  g.fillText('盆', x + size / 2, y + size * 0.47);
+  g.fillText('栽', x + size / 2, y + size * 0.83);
+  g.restore();
 }

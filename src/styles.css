@@ -205,6 +205,51 @@ h3 {
   transition: background 0.6s;
 }
 
+.viewport > canvas {
+  position: relative;
+  z-index: 1;
+}
+
+.backdrop,
+.backdrop-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.backdrop {
+  z-index: 0;
+  overflow: hidden;
+  animation: fade 0.8s ease;
+}
+
+.backdrop-layer {
+  /* Wider than the view so parallax never reveals an edge. */
+  inset: 0 -60px;
+  will-change: transform;
+  /* Seasons dissolve into one another. */
+  animation: fade 0.9s ease;
+}
+
+.backdrop-layer svg {
+  display: block;
+}
+
+/* Washi paper grain and a soft vignette, above the 3D view. */
+.paper-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    radial-gradient(130% 95% at 50% 38%, rgba(0, 0, 0, 0) 55%, rgba(60, 40, 20, 0.14) 100%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.28 0 0 0 0 0.2 0 0 0 0.09 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.viewport.silhouette .paper-overlay {
+  opacity: 0.6;
+}
+
 .viewport.season-autumn {
   background: radial-gradient(120% 90% at 50% 28%, #fbf3e6 0%, #f2e4d0 60%, #e6d2b8 100%);
 }
@@ -1027,6 +1072,9 @@ h3 {
 }
 
 .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -1206,11 +1254,24 @@ h3 {
   position: relative;
   padding: 18px 18px 16px;
   color: var(--paper);
-  min-height: 132px;
+  min-height: 150px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   overflow: hidden;
+}
+
+.challenge-hero > :not(.hero-art) {
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.18);
+}
+
+.challenge-hero .hero-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .challenge-hero h2 {
@@ -1655,6 +1716,7 @@ input[type='range'] {
 
 .portrait-caption {
   position: absolute;
+  z-index: 3;
   left: calc(22px + var(--safe-left));
   right: calc(22px + var(--safe-right));
   bottom: calc(132px + var(--safe-bottom));
@@ -1673,6 +1735,7 @@ input[type='range'] {
 
 .portrait-controls {
   position: absolute;
+  z-index: 4;
   left: 0;
   right: 0;
   bottom: 0;
@@ -1684,6 +1747,7 @@ input[type='range'] {
 
 .portrait-top {
   position: absolute;
+  z-index: 4;
   top: calc(12px + var(--safe-top));
   left: calc(12px + var(--safe-left));
   right: calc(12px + var(--safe-right));

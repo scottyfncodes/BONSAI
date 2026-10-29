@@ -50,8 +50,8 @@ export const SPECIES: Record<SpeciesId, SpeciesDef> = {
     bark: { base: '#6e4433', dark: '#3b2219', light: '#a87458', furrow: 0.85, pattern: 'fibrous' },
     foliage: {
       kind: 'scale',
-      colors: ['#7f9d5a', '#5d7d45', '#5a7444', '#4e6440'],
-      accent: '#9fbb72',
+      colors: ['#62843f', '#4b6d34', '#4a6536', '#415a35'],
+      accent: '#8fb062',
       padSize: 1,
       deciduous: false,
     },

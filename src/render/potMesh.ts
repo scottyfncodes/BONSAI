@@ -2,10 +2,15 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type PotStyle, type SurfaceStyle, potColor, potDims } from '../game/pots';
 import { mulberry32 } from '../tree/rng';
-import { clayTexture, soilTexture } from './textures';
+import { type MossPatch, clayMottleTexture, clayTexture, paintedSoilTexture, walnutTexture } from './textures';
+
+/** Height of the soil surface at the rim (the pot body's top cap is just below). */
+const SOIL_Y = 0.062;
 
 export interface PotBuild {
   group: THREE.Group;
+  /** Height of the floor the stand rests on. */
+  groundY: number;
   dispose(): void;
 }
 
@@ -35,15 +40,15 @@ function ovalShape(w: number, d: number): THREE.Shape {
  * Pot body: an outer wall shell with a lip, plus feet. Extruded downward from
  * the rim; the soil sits just below the rim at y ≈ 0.
  */
-export function buildPot(pot: PotStyle, surface: SurfaceStyle, seed: number): PotBuild {
+export function buildPot(pot: PotStyle, surface: SurfaceStyle, seed: number, winter = false): PotBuild {
   const group = new THREE.Group();
   const disposables: { dispose(): void }[] = [];
   const { width, depthZ, height } = potDims(pot);
   const color = potColor(pot.colorId);
   const glazed = color.material === 'glazed';
   const mat = glazed
-    ? new THREE.MeshPhysicalMaterial({ color: color.hex, roughness: 0.32, clearcoat: 0.7, clearcoatRoughness: 0.25 })
-    : new THREE.MeshStandardMaterial({ color: color.hex, roughness: 0.95, bumpMap: clayTexture(), bumpScale: 0.6 });
+    ? new THREE.MeshPhysicalMaterial({ color: color.hex, map: clayMottleTexture(), roughness: 0.28, clearcoat: 0.85, clearcoatRoughness: 0.18, sheen: 0.3, sheenColor: '#ffffff' })
+    : new THREE.MeshStandardMaterial({ color: color.hex, map: clayMottleTexture(), roughness: 0.92, bumpMap: clayTexture(), bumpScale: 0.8 });
   disposables.push(mat);
 
   const rimY = 0.05;
@@ -138,48 +143,47 @@ export function buildPot(pot: PotStyle, surface: SurfaceStyle, seed: number): Po
   for (let i = 0; i < sp.count; i++) {
     const x = sp.getX(i) / (width / 2);
     const z = sp.getZ(i) / (depthZ / 2);
-    sp.setY(i, 0.035 * Math.max(0, 1 - (x * x + z * z)) - 0.005);
+    // Sits above the pot body's bevelled top cap; trunk base and roots are buried beneath.
+    sp.setY(i, 0.03 * Math.max(0, 1 - (x * x + z * z)) + SOIL_Y);
   }
   soilGeo.computeVertexNormals();
+  // UVs span the soil once, so moss can be painted where it belongs.
   const uv = soilGeo.getAttribute('uv');
-  for (let i = 0; i < uv.count; i++) uv.setXY(i, sp.getX(i) * 1.6, sp.getZ(i) * 1.6);
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, sp.getX(i) / width + 0.5, sp.getZ(i) / depthZ + 0.5);
   disposables.push(soilGeo);
-  const soilMat = new THREE.MeshStandardMaterial({ map: soilTexture(), roughness: 1 });
+  const patches = mossPatches(seed, surface.moss, width / depthZ);
+  const soilTex = paintedSoilTexture(`${seed}:${surface.moss.toFixed(2)}:${(width / depthZ).toFixed(2)}`, patches, winter);
+  const soilMat = new THREE.MeshStandardMaterial({ map: soilTex, roughness: 1 });
   disposables.push(soilMat);
   const soil = new THREE.Mesh(soilGeo, soilMat);
   soil.receiveShadow = true;
   group.add(soil);
 
-  // Moss: patches of small, soft cushions hugging the soil.
+  // A few soft cushions give the painted moss some relief.
   const rng = mulberry32(seed ^ 0x51);
-  const patches = Math.round(surface.moss * 16);
-  if (patches > 0) {
+  if (patches.length) {
     const mossGeo = mergeVertices(new THREE.IcosahedronGeometry(1, 2).deleteAttribute('normal').deleteAttribute('uv'));
     mossGeo.computeVertexNormals();
     const mossMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1 });
     disposables.push(mossGeo, mossMat);
-    const perPatch = 16;
-    const moss = new THREE.InstancedMesh(mossGeo, mossMat, patches * perPatch);
+    const per = 4;
+    const moss = new THREE.InstancedMesh(mossGeo, mossMat, patches.length * per);
     const m = new THREE.Matrix4();
     const c = new THREE.Color();
-    const tones = ['#6c873d', '#7f9a47', '#5a7334', '#8aa452'];
+    const tones = winter ? ['#d9dfd8', '#e8ece6'] : ['#56722f', '#64823a', '#4a6429'];
     let n = 0;
-    for (let i = 0; i < patches; i++) {
-      const a = rng() * Math.PI * 2;
-      const rr = 0.3 + Math.sqrt(rng()) * 0.6;
-      const cx = (Math.cos(a) * rr * (width - 0.25)) / 2;
-      const cz = (Math.sin(a) * rr * (depthZ - 0.25)) / 2;
-      const spread = 0.08 + rng() * 0.12 * surface.moss + 0.05;
-      for (let k = 0; k < perPatch; k++) {
-        const px = cx + (rng() - 0.5) * spread * 2;
-        const pz = cz + (rng() - 0.5) * spread * 2;
-        if (Math.hypot(px, pz) < 0.18) continue;
+    for (const p of patches) {
+      for (let k = 0; k < per; k++) {
+        const a = rng() * Math.PI * 2;
+        const d = Math.sqrt(rng()) * p.r * 0.6;
+        const px = (p.u - 0.5 + Math.cos(a) * d) * width;
+        const pz = (p.v - 0.5 + Math.sin(a) * d) * depthZ;
         const nx = px / ((width - 0.18) / 2);
         const nz = pz / ((depthZ - 0.18) / 2);
-        if (nx * nx + nz * nz > 1) continue;
-        const sz = 0.022 + rng() * 0.03;
-        m.makeScale(sz * 1.2, sz * 0.8, sz * 1.2);
-        m.setPosition(px, 0.035 * Math.max(0, 1 - (nx * nx + nz * nz)) + sz * 0.15, pz);
+        if (nx * nx + nz * nz > 1 || Math.hypot(px, pz) < 0.16) continue;
+        const sz = 0.018 + rng() * 0.022;
+        m.makeScale(sz * 1.5, sz * 0.6, sz * 1.5);
+        m.setPosition(px, 0.03 * Math.max(0, 1 - (nx * nx + nz * nz)) + SOIL_Y + sz * 0.1, pz);
         moss.setMatrixAt(n, m);
         c.set(tones[Math.floor(rng() * tones.length)]!).multiplyScalar(0.9 + rng() * 0.2);
         moss.setColorAt(n, c);
@@ -206,17 +210,73 @@ export function buildPot(pot: PotStyle, surface: SurfaceStyle, seed: number): Po
     disposables.push(g, sm);
     const mesh = new THREE.Mesh(g, sm);
     mesh.scale.setScalar(0.06 + s.scale * 0.1);
-    mesh.position.set((s.x * (width - 0.3)) / 2, 0.02, (s.z * (depthZ - 0.3)) / 2);
+    mesh.position.set((s.x * (width - 0.3)) / 2, SOIL_Y + 0.015, (s.z * (depthZ - 0.3)) / 2);
     mesh.rotation.y = s.rot;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     group.add(mesh);
   }
 
+  // Display stand (daiza): polished walnut, following the pot's footprint.
+  const standTop = footY - 0.035;
+  const standH = 0.075;
+  const sw = width * 1.08 + 0.2;
+  const sd = depthZ * 1.12 + 0.2;
+  const standShape =
+    pot.shape === 'rectangle' || pot.shape === 'crescent' ? roundedRect(sw, sd, Math.min(sw, sd) * 0.12) : ovalShape(sw, sd);
+  const standGeo = new THREE.ExtrudeGeometry(standShape, {
+    depth: standH,
+    bevelEnabled: true,
+    bevelThickness: 0.018,
+    bevelSize: 0.022,
+    bevelSegments: 4,
+    curveSegments: 48,
+  });
+  standGeo.rotateX(Math.PI / 2);
+  standGeo.translate(0, standTop - 0.018, 0);
+  // Planar UVs so the grain runs along the stand.
+  const su = standGeo.getAttribute('uv');
+  const spos = standGeo.getAttribute('position');
+  for (let i = 0; i < su.count; i++) su.setXY(i, spos.getX(i) * 0.45 + spos.getY(i) * 0.6, spos.getZ(i) * 1.6 + spos.getY(i) * 0.6);
+  const standMat = new THREE.MeshPhysicalMaterial({ map: walnutTexture(), roughness: 0.42, clearcoat: 0.45, clearcoatRoughness: 0.35 });
+  disposables.push(standGeo, standMat);
+  const stand = new THREE.Mesh(standGeo, standMat);
+  stand.castShadow = true;
+  stand.receiveShadow = true;
+  group.add(stand);
+  const legGeo = new THREE.CylinderGeometry(0.05, 0.065, 0.06, 18);
+  disposables.push(legGeo);
+  const legY = standTop - standH - 0.04 - 0.03;
+  for (const [x, z] of [[-sw * 0.38, -sd * 0.3], [sw * 0.38, -sd * 0.3], [-sw * 0.38, sd * 0.3], [sw * 0.38, sd * 0.3]]) {
+    const leg = new THREE.Mesh(legGeo, standMat);
+    leg.position.set(x!, legY, z!);
+    leg.castShadow = true;
+    group.add(leg);
+  }
+
   return {
     group,
+    groundY: legY - 0.03,
     dispose() {
       for (const d of disposables) d.dispose();
     },
   };
+}
+
+/** Where moss grows: hugging the trunk and pooling toward the rim. */
+function mossPatches(seed: number, coverage: number, aspect: number): MossPatch[] {
+  const r = mulberry32(seed ^ 0x3c);
+  const n = Math.round(coverage * 14);
+  const out: MossPatch[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = r() * Math.PI * 2;
+    // Some patches around the nebari, most out toward the edge.
+    const ring = i % 3 === 0 ? 0.12 + r() * 0.08 : 0.22 + r() * 0.2;
+    out.push({
+      u: 0.5 + Math.cos(a) * ring,
+      v: 0.5 + Math.sin(a) * ring * Math.min(1.4, aspect),
+      r: (0.06 + r() * 0.08) * (0.6 + coverage * 0.7),
+    });
+  }
+  return out;
 }
