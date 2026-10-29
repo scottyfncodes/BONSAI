@@ -3,14 +3,18 @@ import {
   challengeRecords,
   closeSheet,
   deleteTree,
+  exportCollection,
   hasUnlock,
+  importCollection,
   navigate,
   newTree,
   openPortrait,
   openSheet,
   openTree,
   renameTree,
+  requestPersistentStorage,
   setStyleOverride,
+  storageIsPersistent,
   startChallenge,
   unlockNames,
   updateSettings,
@@ -22,7 +26,8 @@ import { unlockDef } from '../game/unlocks';
 import { PRESET_LABELS, type SaplingPreset } from '../tree/generate';
 import { SPECIES, SPECIES_IDS } from '../tree/species';
 import type { SpeciesId } from '../tree/types';
-import { IconCamera, IconCircleCheck, IconCircleX, IconLock, IconPencil, IconPlus, IconSettings, IconTrash, TreeMark } from './icons';
+import { downloadBlob } from './Gallery';
+import { IconCamera, IconCircleCheck, IconCircleX, IconDownload, IconLock, IconPencil, IconPlus, IconSettings, IconTrash, TreeMark } from './icons';
 import { MetricBar } from './Panels';
 import { Stars } from './Studio';
 
@@ -313,6 +318,11 @@ function ChallengeResultView({ sheet }: { sheet: Extract<NonNullable<Sheet>, { k
 
 function SettingsSheet() {
   const st = useStore((s) => s.profile.settings);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [persistent, setPersistent] = useState<boolean | null>(null);
+  useEffect(() => {
+    void storageIsPersistent().then(setPersistent);
+  }, []);
   return (
     <>
       <h2>Sound &amp; settings</h2>
@@ -333,10 +343,67 @@ function SettingsSheet() {
           Haptics {st.haptics ? 'on' : 'off'} <span style={{ opacity: 0.6, fontWeight: 400 }}>(where supported)</span>
         </button>
       </div>
-      <p className="hint" style={{ marginTop: 16, fontSize: 12.5 }}>
-        Your trees are saved on this device only. Clearing website data removes them.
+
+      <h3 className="section-title" style={{ fontSize: 18, margin: '22px 0 6px' }}>Your trees</h3>
+      <p className="hint" style={{ margin: '0 0 10px' }}>
+        Trees are saved on this device only.{' '}
+        {persistent === true
+          ? 'This browser has agreed to keep them.'
+          : 'Browsers can clear website data – especially Safari when the site isn’t on your Home Screen – so keep a backup.'}
       </p>
-      <button className="btn wide" style={{ marginTop: 8 }} onClick={closeSheet}>
+      <div className="row">
+        <button
+          className="btn small"
+          onClick={() => {
+            const { filename, text } = exportCollection();
+            downloadBlob(new Blob([text], { type: 'application/json' }), filename);
+          }}
+        >
+          <IconDownload /> Back up collection
+        </button>
+        <button className="btn small" onClick={() => fileRef.current?.click()}>
+          <IconPlus /> Restore backup
+        </button>
+        {persistent === false && (
+          <button className="btn small ghost" onClick={() => void requestPersistentStorage().then(setPersistent)}>
+            Ask to keep data
+          </button>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (f) importCollection(await f.text());
+          }}
+        />
+      </div>
+
+      <details style={{ marginTop: 18 }}>
+        <summary className="hint" style={{ cursor: 'pointer', fontWeight: 600 }}>
+          Keyboard shortcuts
+        </summary>
+        <dl className="kv" style={{ marginTop: 8 }}>
+          <dt>← → ↑ ↓</dt>
+          <dd>Turn and tilt the tree</dd>
+          <dt>+ / −, 0</dt>
+          <dd>Zoom, reset view</dd>
+          <dt>[ ] / P</dt>
+          <dd>Previous / next branch, parent</dd>
+          <dt>Delete</dt>
+          <dd>Cut the selected branch (Shears)</dd>
+          <dt>Esc</dt>
+          <dd>Deselect / close</dd>
+          <dt>1–7</dt>
+          <dd>Choose a tool</dd>
+          <dt>⌘Z / ⇧⌘Z</dt>
+          <dd>Undo / redo</dd>
+        </dl>
+      </details>
+      <button className="btn wide" style={{ marginTop: 16 }} onClick={closeSheet}>
         Done
       </button>
     </>

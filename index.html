@@ -16,6 +16,14 @@
     <title>Bonsai: The Studio</title>
   </head>
   <body>
+    <!-- Painted instantly, before any JavaScript loads; removed once the app boots. -->
+    <div id="splash" style="position:fixed;inset:0;display:grid;place-items:center;background:#f6f1e7;z-index:100">
+      <div style="text-align:center;font-family:Georgia,serif;color:#4a433b">
+        <img src="/icon.svg" width="88" height="88" alt="" style="border-radius:22px;box-shadow:0 8px 30px rgba(36,32,28,.12)" />
+        <div style="margin-top:14px;font-size:20px;letter-spacing:.02em">Bonsai</div>
+        <div style="margin-top:4px;font:500 11px/1 -apple-system,system-ui,sans-serif;letter-spacing:.18em;color:#6e6558">THE STUDIO</div>
+      </div>
+    </div>
     <div id="root"></div>
     <noscript>Bonsai: The Studio needs JavaScript to grow.</noscript>
     <script type="module" src="/src/main.tsx"></script>

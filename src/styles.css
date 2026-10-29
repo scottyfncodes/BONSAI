@@ -7,7 +7,7 @@
   --paper-2: #f1eadc;
   --ink: #24201c;
   --ink-2: #4a433b;
-  --muted: #8a8174;
+  --muted: #6e6558;
   --line: rgba(36, 32, 28, 0.1);
   --line-2: rgba(36, 32, 28, 0.16);
   --moss: #5d7838;
@@ -17,6 +17,8 @@
   --earth: #7a5a43;
   --vermilion: #cf472d;
   --vermilion-soft: #f7ddd5;
+  /* Darker vermilion for small text (WCAG AA on ivory). */
+  --vermilion-ink: #b83f27;
   --gold: #c2953a;
   --gold-soft: #f6ead0;
   --copper: #b0663a;
@@ -117,6 +119,17 @@ h3 {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* No accidental text selection or iOS long-press callouts on game chrome. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.app input,
+.app .lead,
+.app .hint {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .screen {
@@ -345,7 +358,7 @@ h3 {
 }
 
 .save-badge.error {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .save-badge.error .dot {
@@ -439,7 +452,7 @@ h3 {
 }
 
 .warn-text {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .row {
@@ -518,7 +531,7 @@ h3 {
 }
 
 .btn.small {
-  min-height: 36px;
+  min-height: 40px;
   padding: 0 12px;
   font-size: 13.5px;
   border-radius: 18px;
@@ -538,9 +551,9 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
-  border-radius: 18px;
+  min-height: 40px;
+  padding: 0 13px;
+  border-radius: 20px;
   font-size: 13.5px;
   font-weight: 560;
   background: var(--paper);
@@ -773,7 +786,7 @@ h3 {
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .hud-goal {
@@ -889,7 +902,7 @@ h3 {
 }
 
 .req.unmet svg {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .req small {
@@ -1018,7 +1031,7 @@ h3 {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .grid {
@@ -1492,7 +1505,7 @@ h3 {
 }
 
 .menu-item.danger {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .menu-item.danger svg {
@@ -1571,8 +1584,8 @@ input[type='range'] {
 }
 
 .swatch {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: 2px solid var(--paper);
   box-shadow: 0 0 0 1px var(--line-2);
@@ -1799,5 +1812,17 @@ input[type='range'] {
   }
   .panel {
     padding: 10px 12px;
+    max-height: 46vh;
+    overflow-y: auto;
+  }
+  /* Undo/redo move to the open lower-left corner, under the thumb. */
+  .studio-bottom .edit-row {
+    position: fixed;
+    left: calc(12px + var(--safe-left));
+    bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 10px);
+  }
+  .studio-bottom .edit-row .spacer {
+    width: 8px;
+    flex: none;
   }
 }

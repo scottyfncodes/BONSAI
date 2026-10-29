@@ -179,8 +179,13 @@ export function analyze(work: Workpiece, yaw: number, layout: TreeLayout = compu
     const gw = (maxX - minX) / N;
     const gh = (maxY - minY) / N;
     for (const p of pts) {
-      for (let i = 0; i < N; i++) {
-        for (let j = 0; j < N; j++) {
+      // Only visit the cells under this pad's bounding box.
+      const i0 = Math.max(0, Math.floor((p.x - p.r - minX) / gw));
+      const i1 = Math.min(N - 1, Math.ceil((p.x + p.r - minX) / gw));
+      const j0 = Math.max(0, Math.floor((p.y - p.r - minY) / gh));
+      const j1 = Math.min(N - 1, Math.ceil((p.y + p.r - minY) / gh));
+      for (let i = i0; i <= i1; i++) {
+        for (let j = j0; j <= j1; j++) {
           const x = minX + (i + 0.5) * gw;
           const y = minY + (j + 0.5) * gh;
           if ((x - p.x) ** 2 + (y - p.y) ** 2 < p.r * p.r) grid[j * N + i] = true;

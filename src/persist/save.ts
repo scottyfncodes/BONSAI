@@ -144,6 +144,82 @@ function readTree(kv: KV, key: string): { record: TreeRecord | null; status: 'ok
   return { record: { ...r, work: { ...r.work, tree: sanitizeTree(r.work.tree) } }, status: 'ok' };
 }
 
+/** Read one tree by id (main copy, else backup). Used to sync edits from another tab. */
+export function readRecord(kv: KV, id: string): TreeRecord | null {
+  return readTree(kv, KEYS.tree(id)).record ?? readTree(kv, KEYS.bak(id)).record;
+}
+
+/** Tree id for a storage key, if it is a main tree record key. */
+export function treeIdFromKey(key: string | null): string | null {
+  if (!key || !key.startsWith(`${P}tree.`) || key.endsWith('.bak')) return null;
+  return key.slice(`${P}tree.`.length);
+}
+
+// ------------------------------------------------------------------ export / import
+
+export const EXPORT_FORMAT = 'bonsai-collection';
+
+export interface CollectionExport {
+  format: typeof EXPORT_FORMAT;
+  schema: number;
+  exportedAt: number;
+  profile: Pick<Profile, 'unlocks' | 'claimed' | 'best'>;
+  trees: TreeRecord[];
+}
+
+export function buildExport(profile: Profile, trees: TreeRecord[], now = Date.now()): CollectionExport {
+  return {
+    format: EXPORT_FORMAT,
+    schema: SCHEMA,
+    exportedAt: now,
+    profile: { unlocks: profile.unlocks, claimed: profile.claimed, best: profile.best },
+    trees,
+  };
+}
+
+export interface ImportResult {
+  trees: TreeRecord[];
+  skipped: number;
+  profile: Pick<Profile, 'unlocks' | 'claimed' | 'best'>;
+}
+
+/**
+ * Parse a backup file. Every tree is validated individually; bad ones are
+ * skipped rather than failing the whole import. Throws only if the file
+ * isn't a BONSAI backup at all.
+ */
+export function parseImport(text: string): ImportResult {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('That file isn’t valid JSON.');
+  }
+  if (!isObj(data) || data.format !== EXPORT_FORMAT || !Array.isArray(data.trees)) throw new Error('That file isn’t a BONSAI collection backup.');
+  if (isNum(data.schema) && data.schema > SCHEMA) throw new Error('That backup comes from a newer version of the game.');
+  const trees: TreeRecord[] = [];
+  let skipped = 0;
+  for (const t of data.trees) {
+    const m = migrate({ schema: data.schema, record: t });
+    if (m.status === 'invalid' || m.status === 'newer' || validateRecord(m.record).length) {
+      skipped++;
+      continue;
+    }
+    const r = m.record as TreeRecord;
+    trees.push({ ...r, work: { ...r.work, tree: sanitizeTree(r.work.tree) } });
+  }
+  const p = isObj(data.profile) ? data.profile : {};
+  return {
+    trees,
+    skipped,
+    profile: {
+      unlocks: Array.isArray(p.unlocks) ? p.unlocks.filter(isStr) : [],
+      claimed: Array.isArray(p.claimed) ? p.claimed.filter(isStr) : [],
+      best: isObj(p.best) ? (p.best as Profile['best']) : {},
+    },
+  };
+}
+
 export function loadAll(kv: KV): LoadResult {
   const out: LoadResult = { profile: defaultProfile(), trees: [], recovered: [], lost: [], newer: [] };
   const prof = parse(kv.get(KEYS.profile));
@@ -191,15 +267,15 @@ export function loadAll(kv: KV): LoadResult {
     }
     if (main.status === 'missing' && bak.status === 'missing') continue;
     // Keep unreadable bytes aside so nothing is ever silently destroyed.
-    const raw = kv.get(KEYS.tree(id)) ?? kv.get(KEYS.bak(id));
-    if (raw !== null) {
-      try {
-        kv.set(KEYS.quarantine(id), raw);
-        kv.remove(KEYS.tree(id));
-        kv.remove(KEYS.bak(id));
-      } catch {
-        /* leave in place if we can't move it */
-      }
+    const rawMain = kv.get(KEYS.tree(id));
+    const rawBak = kv.get(KEYS.bak(id));
+    try {
+      if (rawMain !== null) kv.set(KEYS.quarantine(id), rawMain);
+      if (rawBak !== null) kv.set(`${KEYS.quarantine(id)}.bak`, rawBak);
+      kv.remove(KEYS.tree(id));
+      kv.remove(KEYS.bak(id));
+    } catch {
+      /* leave everything in place if we can't move it */
     }
     out.lost.push(id);
   }
@@ -233,13 +309,28 @@ export function saveTree(kv: KV, record: TreeRecord, order: string[]): SaveOutco
 }
 
 export function saveProfile(kv: KV, profile: Profile): SaveOutcome {
+  const raw = JSON.stringify(profile);
   try {
-    kv.set(KEYS.profile, JSON.stringify(profile));
+    kv.set(KEYS.profile, raw);
     return { ok: true };
   } catch (e) {
-    return { ok: false, reason: isQuotaError(e) ? 'quota' : 'error', message: 'Could not save progress.' };
+    if (isQuotaError(e)) {
+      // Progress matters more than thumbnails: free them and retry once.
+      for (const k of kv.keys()) if (k.startsWith(`${P}thumb.`)) kv.remove(k);
+      try {
+        kv.set(KEYS.profile, raw);
+        return { ok: true };
+      } catch {
+        /* fall through */
+      }
+    }
+    return { ok: false, reason: isQuotaError(e) ? 'quota' : 'error', message: 'Couldn’t save your progress – storage may be full.' };
   }
 }
+
+/** True if any copy of this tree id exists in storage (loaded or not). */
+export const treeKeyExists = (kv: KV, id: string): boolean =>
+  kv.get(KEYS.tree(id)) !== null || kv.get(KEYS.bak(id)) !== null || kv.get(KEYS.quarantine(id)) !== null;
 
 export function deleteTree(kv: KV, id: string, order: string[]): void {
   kv.remove(KEYS.tree(id));

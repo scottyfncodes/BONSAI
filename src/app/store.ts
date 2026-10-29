@@ -28,6 +28,8 @@ export interface StudioState {
   dragging: boolean;
   /** Set when a bend hit the wood's limit during the current drag. */
   resisting: boolean;
+  /** Growth is being simulated (off the main thread). */
+  growing: boolean;
 }
 
 export type Sheet =
@@ -59,6 +61,8 @@ export interface AppState {
   webgl: 'ok' | 'unavailable' | 'lost';
   /** Collection thumbnails (data URLs), keyed by tree id. */
   thumbs: Record<string, string>;
+  /** Latest message for screen readers (the 3D view itself is not accessible). */
+  announcement: string;
   /** Bumped whenever portraits are added or removed. */
   galleryVersion: number;
 }
@@ -89,6 +93,7 @@ let state: AppState = {
   webgl: 'ok',
   thumbs: {},
   galleryVersion: 0,
+  announcement: '',
 };
 
 const listeners = new Set<() => void>();

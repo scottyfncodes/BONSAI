@@ -1,22 +1,27 @@
 import { sound } from '../audio/sound';
 import { CHALLENGES, challengeDef, evaluateChallenge, rewardsFor, variantDef } from '../game/challenges';
-import { type TreeRecord, type Workpiece, createRecord } from '../game/model';
+import { type TreeRecord, type Workpiece, branchLabel, createRecord, newId } from '../game/model';
 import { type PotStyle, type Stone, type StoneKind, type SurfaceStyle, MAX_STONES } from '../game/pots';
 import { unlockDef } from '../game/unlocks';
 import { browserKV, type KV } from '../persist/kv';
 import {
   type Profile,
   type Settings,
+  KEYS,
+  buildExport,
   deleteTree as deleteStored,
   loadAll,
   loadThumb,
+  parseImport,
+  readRecord,
+  treeIdFromKey,
+  treeKeyExists,
   saveProfile,
   saveThumb,
   saveTree,
 } from '../persist/save';
 import type { SceneInput } from '../render/stage';
 import type { SaplingPreset } from '../tree/generate';
-import { advance } from '../tree/growth';
 import { createHistory, push, redo as redoH, replace, undo as undoH } from '../tree/history';
 import { computeLayout } from '../tree/layout';
 import {
@@ -32,6 +37,7 @@ import { rotateAxis } from '../tree/vec';
 import { mulberry32 } from '../tree/rng';
 import type { BranchId, Care, SpeciesId } from '../tree/types';
 import { emitFx, view } from './bus';
+import { runGrowth } from './growthClient';
 import { type Route, type Sheet, type StudioState, type ToolId, getState, setState } from './store';
 
 let kv: KV | null = null;
@@ -68,6 +74,9 @@ export function boot(storage: KV = browserKV()): void {
     if (r && r !== getState().route) setState({ route: r });
   });
   window.addEventListener('pagehide', flushSaves);
+  window.addEventListener('storage', onStorageEvent);
+  // Installed (Home Screen) apps: ask the browser not to evict saves.
+  if (matchMedia('(display-mode: standalone)').matches) void requestPersistentStorage();
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) flushSaves();
     sound.suspend(document.hidden);
@@ -85,6 +94,125 @@ export function navigate(route: Route): void {
 }
 
 // ------------------------------------------------------------------ persistence
+
+/**
+ * Another tab or window changed a saved tree. Adopt its version unless we
+ * have unsaved edits of our own to that tree (then ours wins on next save).
+ */
+function onStorageEvent(e: StorageEvent): void {
+  if (!kv) return;
+  if (e.key === KEYS.profile && e.newValue) {
+    mergeProgress(e.newValue);
+    return;
+  }
+  const id = treeIdFromKey(e.key);
+  if (!id || pending.has(id)) return;
+  const s = getState();
+  if (e.newValue === null) {
+    if (!s.trees[id]) return;
+    const trees = { ...s.trees };
+    delete trees[id];
+    const order = s.order.filter((x) => x !== id);
+    setState({ trees, order });
+    if (s.activeId === id) {
+      toast('This tree was deleted in another window.', 'warn');
+      if (order[0]) openTree(order[0], s.route);
+      else setState({ activeId: null, studio: null });
+    }
+    return;
+  }
+  const rec = readRecord(kv, id);
+  if (!rec) return;
+  const order = s.order.includes(id) ? s.order : [id, ...s.order];
+  setState({ trees: { ...s.trees, [id]: rec }, order });
+  if (s.activeId === id && s.studio && !s.studio.dragging) {
+    setState({ studio: { ...freshStudio(rec.work, s.studio.tool) } });
+    toast('Updated with changes from another window.', 'info');
+  }
+}
+
+/** Union progress from another tab so neither tab can erase the other's unlocks. */
+function mergeProgress(raw: string): void {
+  let other: Partial<Profile>;
+  try {
+    other = JSON.parse(raw) as Partial<Profile>;
+  } catch {
+    return;
+  }
+  const p = getState().profile;
+  const unlocks = [...new Set([...p.unlocks, ...(Array.isArray(other.unlocks) ? other.unlocks : [])])];
+  const claimed = [...new Set([...p.claimed, ...(Array.isArray(other.claimed) ? other.claimed : [])])];
+  const best = { ...p.best };
+  for (const [k, v] of Object.entries(other.best ?? {})) {
+    if (!v || typeof v.score !== 'number') continue;
+    const cur = best[k];
+    if (!cur || v.score > cur.score) best[k] = { score: v.score, stars: Math.max(v.stars ?? 0, cur?.stars ?? 0) };
+  }
+  if (unlocks.length === p.unlocks.length && claimed.length === p.claimed.length && JSON.stringify(best) === JSON.stringify(p.best)) return;
+  setState({ profile: { ...p, unlocks, claimed, best } });
+  persistProfile();
+}
+
+export async function requestPersistentStorage(): Promise<boolean> {
+  try {
+    if (!navigator.storage?.persist) return false;
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+export async function storageIsPersistent(): Promise<boolean | null> {
+  try {
+    return navigator.storage?.persisted ? await navigator.storage.persisted() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function exportCollection(): { filename: string; text: string } {
+  flushSaves();
+  const s = getState();
+  const data = buildExport(s.profile, s.order.map((id) => s.trees[id]!).filter(Boolean));
+  const date = new Date().toISOString().slice(0, 10);
+  return { filename: `bonsai-collection-${date}.json`, text: JSON.stringify(data) };
+}
+
+/** Merge a backup into this device. Never overwrites: clashing ids become copies. */
+export function importCollection(text: string): void {
+  let parsed: ReturnType<typeof parseImport>;
+  try {
+    parsed = parseImport(text);
+  } catch (e) {
+    toast(e instanceof Error ? e.message : 'Import failed.', 'error');
+    return;
+  }
+  let added = 0;
+  for (const t of parsed.trees) {
+    const exists = getState().trees[t.id];
+    if (exists && JSON.stringify(exists) === JSON.stringify(t)) continue;
+    // Also avoid ids held by saves this version can't load (newer or quarantined).
+    const clash = !!exists || (!!kv && treeKeyExists(kv, t.id));
+    addRecord(clash ? { ...t, id: newId(), name: `${t.name} (imported)` } : t);
+    added++;
+  }
+  updateProfile((p) => {
+    const best = { ...p.best };
+    for (const [k, v] of Object.entries(parsed.profile.best)) {
+      const cur = best[k];
+      if (!cur || v.score > cur.score) best[k] = { score: v.score, stars: Math.max(v.stars, cur?.stars ?? 0) };
+    }
+    return {
+      ...p,
+      unlocks: [...new Set([...p.unlocks, ...parsed.profile.unlocks])],
+      claimed: [...new Set([...p.claimed, ...parsed.profile.claimed])],
+      best,
+    };
+  });
+  const skipped = parsed.skipped ? ` ${parsed.skipped} damaged tree${parsed.skipped > 1 ? 's were' : ' was'} skipped.` : '';
+  toast(`Imported ${added} tree${added === 1 ? '' : 's'}.${skipped}`, added ? 'success' : 'info');
+}
 
 function addRecord(r: TreeRecord): void {
   setState((s) => ({ trees: { ...s.trees, [r.id]: r }, order: [r.id, ...s.order.filter((x) => x !== r.id)] }));
@@ -136,7 +264,10 @@ export function flushSaves(): void {
 function persistProfile(): void {
   if (!kv) return;
   const res = saveProfile(kv, getState().profile);
-  if (!res.ok) setState({ saveStatus: 'error', saveError: res.message });
+  if (!res.ok) {
+    setState({ saveStatus: 'error', saveError: res.message });
+    toast(res.message, 'error');
+  }
 }
 
 function updateProfile(fn: (p: Profile) => Profile): void {
@@ -157,6 +288,14 @@ export function toast(text: string, tone: 'info' | 'success' | 'warn' | 'error' 
   const id = toastSeq++;
   setState((s) => ({ toasts: [...s.toasts.slice(-2), { id, text, tone }] }));
   window.setTimeout(() => setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), tone === 'error' ? 6000 : 3200);
+}
+
+let announceSeq = 0;
+/** Tell screen-reader users what just happened in the 3D view. */
+export function announce(text: string): void {
+  // Alternate a zero-width suffix so repeating the same message is still announced.
+  announceSeq++;
+  setState({ announcement: text + (announceSeq % 2 ? '\u200b' : '') });
 }
 
 export const dismissNotice = () => setState({ notice: null });
@@ -196,12 +335,19 @@ function freshStudio(work: Workpiece, tool: ToolId = 'prune'): StudioState {
     lastReport: null,
     dragging: false,
     resisting: false,
+    growing: false,
   };
 }
 
 export function openTree(id: string, route: Route = 'studio'): void {
   const r = getState().trees[id];
   if (!r) return;
+  if (getState().activeId === id && getState().studio) {
+    // Already on the bench: keep its undo history and camera.
+    setState({ sheet: null });
+    navigate(route);
+    return;
+  }
   const keepTool = getState().studio?.tool;
   setState({ activeId: id, studio: freshStudio(r.work, keepTool === 'grow' || keepTool === 'view' ? keepTool : 'prune'), sheet: null });
   updateProfile((p) => ({ ...p, activeTreeId: id }));
@@ -266,18 +412,46 @@ export function commit(work: Workpiece, extra: Partial<StudioState> = {}): void 
   updateRecord(id, (r) => ({ ...r, work }));
 }
 
+/**
+ * A drag owns the Studio from start to commit. The token lets previews and
+ * the final commit detect that the tree or its history changed underneath
+ * them (another tree opened, undo, sync from another tab) and back off.
+ */
+export interface DragToken {
+  treeId: string;
+  past: number;
+}
+
+export function beginDrag(): DragToken | null {
+  const s = getState();
+  if (!s.studio || !s.activeId) return null;
+  setStudio({ dragging: true, resisting: false });
+  return { treeId: s.activeId, past: s.studio.history.past.length };
+}
+
+export function dragValid(t: DragToken | undefined): boolean {
+  if (!t) return true;
+  const s = getState();
+  return s.activeId === t.treeId && !!s.studio && s.studio.history.past.length === t.past;
+}
+
 /** Live preview while dragging: no undo step, no save. */
-export function previewWork(work: Workpiece): void {
+export function previewWork(work: Workpiece, token?: DragToken): boolean {
   const st = studio();
-  if (!st) return;
+  if (!st || !dragValid(token)) return false;
   setStudio({ history: replace(st.history, work) });
+  return true;
 }
 
 /** Finish a drag that started from `base`: exactly one undo step. */
-export function commitFrom(base: Workpiece, final: Workpiece): void {
+export function commitFrom(base: Workpiece, final: Workpiece, token?: DragToken): void {
   const st = studio();
   const id = getState().activeId;
   if (!st || !id) return;
+  if (!dragValid(token)) {
+    setStudio({ dragging: false, resisting: false });
+    return;
+  }
   if (final === base) {
     setStudio({ history: { ...st.history, present: base }, dragging: false, resisting: false });
     return;
@@ -290,28 +464,26 @@ export function commitFrom(base: Workpiece, final: Workpiece): void {
   updateRecord(id, (r) => ({ ...r, work: final }));
 }
 
-export function setDragging(dragging: boolean, resisting = false): void {
-  setStudio({ dragging, resisting });
-}
-
 export function undo(): void {
   const st = studio();
   const id = getState().activeId;
-  if (!st || !id || !st.history.past.length) return;
+  if (!st || !id || !st.history.past.length || st.dragging) return;
   const h = undoH(st.history);
   setStudio({ history: h, selected: h.present.tree.branches[st.selected ?? ''] ? st.selected : null });
   updateRecord(id, (r) => ({ ...r, work: h.present }));
   sound.tap();
+  announce('Undone.');
 }
 
 export function redo(): void {
   const st = studio();
   const id = getState().activeId;
-  if (!st || !id || !st.history.future.length) return;
+  if (!st || !id || !st.history.future.length || st.dragging) return;
   const h = redoH(st.history);
   setStudio({ history: h, selected: h.present.tree.branches[st.selected ?? ''] ? st.selected : null });
   updateRecord(id, (r) => ({ ...r, work: h.present }));
   sound.tap();
+  announce('Redone.');
 }
 
 export function setTool(tool: ToolId): void {
@@ -331,6 +503,12 @@ export function selectBranch(id: BranchId | null, t?: number): void {
     return;
   }
   setStudio({ selected: id, cutT: 0 });
+  const b = id ? st.history.present.tree.branches[id] : undefined;
+  if (b) {
+    const tree = st.history.present.tree;
+    const kids = Object.values(tree.branches).filter((c) => c.parentId === b.id).length;
+    announce(`${branchLabel(tree, b)} selected, ${(b.radius * 20).toFixed(1)} centimetres thick, ${kids} offshoots.`);
+  } else announce('Selection cleared.');
   if (id) {
     sound.tap();
     sound.haptic(6);
@@ -385,6 +563,11 @@ export function cutSelected(): void {
   if (preview.foliageFraction > 0.02) window.setTimeout(() => sound.rustle(Math.min(1, preview.foliageFraction * 4)), 90);
   sound.haptic([10, 30, 6]);
   commit({ ...work, tree: res.tree }, { selected: null, cutT: 0 });
+  announce(
+    preview.shortened
+      ? `Branch shortened. ${Math.round(preview.foliageFraction * 100)}% of the foliage removed.`
+      : `Cut. ${preview.removed.length} branch${preview.removed.length === 1 ? '' : 'es'} removed, ${Math.round(preview.foliageFraction * 100)}% of the foliage.`,
+  );
   advanceOnboarding(2);
   if (preview.foliageFraction > 0.35) toast('A heavy cut – the tree will need time to recover.', 'warn');
 }
@@ -401,6 +584,7 @@ export function applyWireToSelected(): void {
   }
   sound.wire();
   sound.haptic(8);
+  announce('Wire applied. The branch will hold any bend you give it.');
   emitFx({ type: 'pulse', id: st.selected });
   commit({ ...work, tree: res.tree });
 }
@@ -422,24 +606,44 @@ export function removeWireFromSelected(): void {
   }
   sound.unwire();
   commit({ ...work, tree: res.tree });
+  announce(res.note ?? 'Wire removed.');
   if (res.note) toast(res.note, res.note.startsWith('Fully') ? 'success' : 'info');
 }
 
-export function grow(days: number): void {
+export async function grow(days: number): Promise<void> {
   const st = studio();
-  const r = getState().activeId ? getState().trees[getState().activeId!] : null;
-  if (!st || !r) return;
+  const id = getState().activeId;
+  const r = id ? getState().trees[id] : null;
+  if (!st || !r || !id || st.growing) return;
   const work = st.history.present;
-  const { tree, report } = advance(work.tree, days, r.care);
-  commit({ ...work, tree }, { lastReport: report, selected: tree.branches[st.selected ?? ''] ? st.selected : null });
+  setStudio({ growing: true });
   sound.growth();
+  let result: Awaited<ReturnType<typeof runGrowth>>;
+  try {
+    result = await runGrowth(work.tree, days, r.care);
+  } catch {
+    setStudio({ growing: false });
+    toast('Growth could not be simulated. Your tree is unchanged.', 'error');
+    return;
+  }
+  const now = studio();
+  // The player switched trees or edited meanwhile: don't overwrite their work.
+  if (!now || getState().activeId !== id || now.history.present !== work) {
+    if (now) setStudio({ growing: false });
+    toast('Growth was cancelled because the tree changed.', 'warn');
+    return;
+  }
+  const { tree, report } = result;
+  commit({ ...work, tree }, { lastReport: report, growing: false, selected: tree.branches[now.selected ?? ''] ? now.selected : null });
   const bits: string[] = [];
   if (report.newShoots.length) bits.push(`${report.newShoots.length} new shoot${report.newShoots.length > 1 ? 's' : ''}`);
   if (report.woundsClosed) bits.push(`${report.woundsClosed} cut${report.woundsClosed > 1 ? 's' : ''} healed`);
   if (report.wiresSet.length) bits.push(`${report.wiresSet.length} wired branch${report.wiresSet.length > 1 ? 'es' : ''} set`);
   if (report.wireBiting.length) bits.push(`wire biting on ${report.wireBiting.length}`);
   if (report.dieback.length) bits.push(`${report.dieback.length} shaded twig${report.dieback.length > 1 ? 's' : ''} thinning`);
-  toast(bits.length ? bits.join(' · ') : 'The tree rests.', report.wireBiting.length ? 'warn' : 'info');
+  const summary = bits.length ? bits.join(' · ') : 'The tree rests.';
+  toast(summary, report.wireBiting.length ? 'warn' : 'info');
+  announce(`${days} days passed. ${summary}`);
 }
 
 export function setCare(care: Partial<Care>): void {

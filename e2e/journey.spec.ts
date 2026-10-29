@@ -205,3 +205,49 @@ test('collection: new tree, rename and delete', async ({ page }) => {
   await page.getByTestId('tab-collection').click();
   await expect(page.getByTestId('tree-card')).toHaveCount(1);
 });
+
+test('a slider drag is exactly one undo step', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('tool-surface').click();
+  const before = await page.evaluate(() => {
+    const id = JSON.parse(localStorage.getItem('bonsai.v1.profile')!).activeTreeId;
+    return JSON.parse(localStorage.getItem(`bonsai.v1.tree.${id}`)!).record.work.surface.moss as number;
+  });
+  const slider = page.getByLabel('Moss');
+  const b = (await slider.boundingBox())!;
+  await page.mouse.move(b.x + 4, b.y + b.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(b.x + 4 + (i * (b.width - 8)) / 8, b.y + b.height / 2);
+  await page.mouse.up();
+  await page.waitForTimeout(700);
+  await waitSaved(page);
+  const moss = async () =>
+    page.evaluate(() => {
+      const id = JSON.parse(localStorage.getItem('bonsai.v1.profile')!).activeTreeId;
+      return JSON.parse(localStorage.getItem(`bonsai.v1.tree.${id}`)!).record.work.surface.moss as number;
+    });
+  expect(await moss()).toBeGreaterThan(before + 0.3);
+  await page.getByTestId('undo').click();
+  await page.waitForTimeout(700);
+  expect(await moss()).toBeCloseTo(before, 5);
+});
+
+test('a collection backup restores deleted trees', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('tab-collection').click();
+  await page.getByTestId('open-settings').click();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Back up collection' }).click()]);
+  const file = await download.path();
+  await page.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByTestId('tree-card')).toHaveCount(1);
+  await page.getByRole('button', { name: /^Options for / }).click();
+  await page.getByRole('button', { name: 'Delete tree' }).click();
+  await page.getByTestId('confirm-delete').click();
+  await expect(page.getByTestId('tree-card')).toHaveCount(0);
+  await page.getByTestId('open-settings').click();
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Restore backup' }).click()]);
+  await chooser.setFiles(file);
+  await expect(page.getByText(/Imported 1 tree/)).toBeVisible();
+  await page.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByTestId('tree-card')).toHaveCount(1);
+});
