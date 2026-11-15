@@ -68,7 +68,14 @@ export function TreeViewport(props: ViewportProps) {
     stageRef.current = stage;
     onStage?.(stage);
     // Only the Studio's camera defines the tree's "front" for scoring.
-    const offFrame = interactiveRef.current ? stage.onFrame(() => view.setYaw(stage.rig.pose.yaw)) : () => {};
+    const offFrame = interactiveRef.current
+      ? stage.onFrame(() => {
+          view.setYaw(stage.rig.pose.yaw);
+          // Where the composition ends on screen; the end-to-end tests check no panel covers it.
+          const bottom = String(Math.round(stage.treeBottomY()));
+          if (host.dataset.treeBottom !== bottom) host.dataset.treeBottom = bottom;
+        })
+      : () => {};
     return () => {
       offFrame();
       onStage?.(null);
@@ -325,7 +332,8 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
         return;
       }
       const s = stage.project(p);
-      el.style.visibility = s.visible ? 'visible' : 'hidden';
+      // '' rather than 'visible': a handle must stay hidden while the Studio itself is (another tab is open).
+      el.style.visibility = s.visible ? '' : 'hidden';
       el.style.transform = `translate(${s.x}px, ${s.y}px)`;
     };
     const update = () => {
@@ -334,7 +342,7 @@ function Handles({ stageRef, layoutRef, work, selected, tool, cutT }: HandleProp
       place(tipRef.current, bezierPoint(l, 1));
       place(midRef.current, bezierPoint(l, 0.5));
       // On short or foreshortened twigs the handles would overlap: keep only Aim.
-      if (midRef.current && midRef.current.style.visibility === 'visible') {
+      if (midRef.current && midRef.current.style.visibility !== 'hidden') {
         const a = stage.project(bezierPoint(l, 1));
         const m = stage.project(bezierPoint(l, 0.5));
         if (Math.hypot(a.x - m.x, a.y - m.y) < 44) midRef.current.style.visibility = 'hidden';

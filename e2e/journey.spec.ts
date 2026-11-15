@@ -251,3 +251,29 @@ test('a collection backup restores deleted trees', async ({ page }) => {
   await page.getByRole('button', { name: 'Done' }).click();
   await expect(page.getByTestId('tree-card')).toHaveCount(1);
 });
+
+test('the tree and its pot stay clear of every tool panel', async ({ page }) => {
+  await open(page);
+  for (const tool of ['shape', 'grow', 'pot', 'view']) {
+    await page.getByTestId(`tool-${tool}`).click();
+    // Let the camera glide to its new resting pose.
+    await page.waitForTimeout(1200);
+    const panelTop = (await page.getByTestId(`panel-${tool}`).boundingBox())!.y;
+    const viewport = page.getByTestId('viewport');
+    const view = (await viewport.boundingBox())!;
+    // Underside of the pot and stand, as the stage last drew it.
+    const stand = Number(await viewport.getAttribute('data-tree-bottom'));
+    expect(stand, `${tool}: the stage reports where the pot ends`).toBeGreaterThan(0);
+    expect(view.y + stand, `${tool}: pot above the panel`).toBeLessThan(panelTop + 4);
+  }
+});
+
+test('shape handles do not leak onto other tabs', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('tool-shape').click();
+  await page.keyboard.press(']');
+  await page.keyboard.press(']');
+  await expect(page.locator('.handle.tip')).toBeVisible();
+  await page.getByTestId('tab-collection').click();
+  await expect(page.locator('.handle.tip')).toBeHidden();
+});

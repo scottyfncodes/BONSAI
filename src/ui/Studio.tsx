@@ -270,42 +270,44 @@ const SELECTED_PANEL_FLOOR: Record<string, number> = { prune: 254, shape: 318, w
 
 function useOpenWindow(rootRef: React.RefObject<HTMLDivElement | null>, stageRef: React.RefObject<Stage | null>, tool: string | null) {
   const tallest = useRef<{ size: string; byTool: Record<string, number> }>({ size: '', byTool: {} });
-  useLayoutEffect(() => {
+  const measure = useCallback(() => {
     const root = rootRef.current;
-    if (!root || !tool) return;
-    const measure = () => {
-      const stage = stageRef.current;
-      const bottom = root.querySelector<HTMLElement>('.studio-bottom');
-      const top = root.querySelector<HTMLElement>('.studio-top');
-      if (!stage || !bottom || !top) return;
-      const size = `${root.clientWidth}x${root.clientHeight}`;
-      if (tallest.current.size !== size) tallest.current = { size, byTool: {} };
-      // The challenge bar and the coach tip sit under the header.
-      const banner = root.querySelector<HTMLElement>('.hud, .coach');
-      const head = banner ? banner.offsetTop + banner.offsetHeight : top.offsetHeight;
-      // Everything below the undo row: the panel and the tool dock.
-      const row = bottom.querySelector<HTMLElement>('.edit-row');
-      const covered = bottom.offsetHeight - (row ? row.offsetTop + row.offsetHeight : 0);
-      // On short landscape screens the panel and dock sit beside the tree, not under it.
-      if (matchMedia('(orientation: landscape) and (max-height: 500px)').matches) {
-        stage.setOpenWindow(head + 8, root.clientHeight - 10);
-        return;
-      }
-      const reserve = Math.max(covered, tallest.current.byTool[tool] ?? 0, SELECTED_PANEL_FLOOR[tool] ?? 0);
-      tallest.current.byTool[tool] = reserve;
-      // The undo row's buttons sit at the edges; the stand may slip between them.
-      stage.setOpenWindow(head + 8, root.clientHeight - reserve - 6);
-    };
-    measure();
+    const stage = stageRef.current;
+    const bottom = root?.querySelector<HTMLElement>('.studio-bottom');
+    const top = root?.querySelector<HTMLElement>('.studio-top');
+    if (!root || !stage || !bottom || !top || !tool) return;
+    // The challenge bar and the coach tip sit under the header.
+    const banner = root.querySelector<HTMLElement>('.hud, .coach');
+    const head = banner ? banner.offsetTop + banner.offsetHeight : top.offsetHeight;
+    // On short landscape screens the panel and dock sit beside the tree, not under it.
+    if (matchMedia('(orientation: landscape) and (max-height: 500px)').matches) {
+      stage.setOpenWindow(head + 8, root.clientHeight - 10);
+      return;
+    }
+    const size = `${root.clientWidth}x${root.clientHeight}`;
+    if (tallest.current.size !== size) tallest.current = { size, byTool: {} };
+    // Everything below the undo row: the panel and the tool dock.
+    const row = bottom.querySelector<HTMLElement>('.edit-row');
+    const covered = bottom.offsetHeight - (row ? row.offsetTop + row.offsetHeight : 0);
+    const reserve = Math.max(covered, tallest.current.byTool[tool] ?? 0, SELECTED_PANEL_FLOOR[tool] ?? 0);
+    tallest.current.byTool[tool] = reserve;
+    // The undo row's buttons sit at the edges; the stand may slip between them.
+    stage.setOpenWindow(head + 8, root.clientHeight - reserve - 6);
+  }, [rootRef, stageRef, tool]);
+
+  // After every render: a branch was chosen, the coach tip left, a challenge began.
+  useLayoutEffect(measure);
+
+  // Between renders: the window was resized or rotated, or text wrapped differently.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(measure);
     ro.observe(root);
     const bottom = root.querySelector('.studio-bottom');
-    if (bottom) {
-      ro.observe(bottom);
-      for (const el of Array.from(bottom.children)) ro.observe(el);
-    }
+    if (bottom) ro.observe(bottom);
     return () => ro.disconnect();
-  });
+  }, [rootRef, measure]);
 }
 
 // ------------------------------------------------------------- keyboard

@@ -6,9 +6,8 @@ import { type TreeLayout, bezierPoint, frameAt, layoutBounds, radiusAt } from '.
 import type { PrunePreview } from '../tree/ops';
 import { SPECIES, seasonOf } from '../tree/species';
 import type { BranchId, TreeState } from '../tree/types';
-import type { V3 } from '../tree/vec';
+import { type V3, clamp } from '../tree/vec';
 import { buildBarkGeometry, buildWireGeometry } from './barkMesh';
-import { clamp } from '../tree/vec';
 import { CameraRig, DIST_LIMITS } from './camera';
 import { type FoliageCluster, type FoliageMesh, buildFoliage, foliageClusters, foliageColor, highlightFoliage, snowAmount, windTime } from './foliage';
 import { buildMarks } from './marks';
@@ -231,7 +230,7 @@ export class Stage {
 
   /**
    * The part of the view the interface leaves open, in CSS pixels from the
-   * top of the container. When set (portrait Studio), the tree is framed
+   * top of the container. When set (the Studio), the tree is framed
    * inside it instead of at a fixed place, so no panel covers the tree.
    */
   private openWindow: { top: number; bottom: number } | null = null;
@@ -777,6 +776,12 @@ export class Stage {
     return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h, depth, visible: v.z < 1 && v.z > -1 };
   }
 
+  /** Screen y (CSS px from the top of the view) of the underside of the pot and stand. */
+  treeBottomY(): number {
+    if (!this.input) return 0;
+    return this.project([0, -(potDims(this.input.pot).height + 0.15), 0]).y;
+  }
+
   private pxPerWorld(depth: number): number {
     const h = this.container.clientHeight;
     return h / (2 * Math.tan((this.rig.camera.fov * Math.PI) / 360) * Math.max(depth, 0.01));
@@ -887,6 +892,8 @@ export class Stage {
     height: number;
     background: Background;
     caption?: { title: string; lines: string[] };
+    /** Where the tree sits in the picture; default: as it sits on screen. */
+    framing?: { center: number; fill: number };
   }): Promise<HTMLCanvasElement> {
     const { width, height, background, caption } = opts;
     const out = document.createElement('canvas');
@@ -930,7 +937,20 @@ export class Stage {
       this.renderer.setSize(width, height, false);
       this.rig.camera.aspect = width / height;
       this.rig.camera.updateProjectionMatrix();
-      this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
+      const pose = { ...this.rig.goal, target: [...this.rig.goal.target] as [number, number, number] };
+      if (opts.framing) {
+        // Compose for the picture, not for whichever panel is open: swap the
+        // resting pose for the picture's, keeping the player's turn, zoom and pan.
+        const home = this.rig.home;
+        const framing = this.rig.framing;
+        this.rig.framing = opts.framing;
+        this.computeHome();
+        pose.distance *= this.rig.home.distance / home.distance;
+        pose.target[1] += this.rig.home.target[1] - home.target[1];
+        this.rig.framing = framing;
+        this.rig.home = home;
+      }
+      this.rig.pose = pose;
       this.rig.apply();
       this.renderer.render(this.scene, this.rig.camera);
       g.drawImage(this.renderer.domElement, 0, 0, width, height);
@@ -974,7 +994,12 @@ export class Stage {
 
   /** Small JPEG thumbnail of the current view for collection cards. */
   async thumbnail(scenery: Scenery, size = 320): Promise<string> {
-    const c = await this.captureCanvas({ width: size, height: Math.round(size * 1.25), background: { ...BACKGROUNDS[0]!, scenery } });
+    const c = await this.captureCanvas({
+      width: size,
+      height: Math.round(size * 1.25),
+      background: { ...BACKGROUNDS[0]!, scenery },
+      framing: { center: 0.52, fill: 0.62 },
+    });
     return c.toDataURL('image/jpeg', 0.78);
   }
 
