@@ -266,7 +266,7 @@ function Coach({ st }: { st: StudioState }) {
  * each tool is kept, so choosing a branch never moves the tree under a finger.
  */
 /** Room a tool's panel takes once a branch is chosen (panel + dock), so the first tap doesn't move the tree either. */
-const SELECTED_PANEL_FLOOR: Record<string, number> = { prune: 250, shape: 310, wire: 230 };
+const SELECTED_PANEL_FLOOR: Record<string, number> = { prune: 254, shape: 318, wire: 234 };
 
 function useOpenWindow(rootRef: React.RefObject<HTMLDivElement | null>, stageRef: React.RefObject<Stage | null>, tool: string | null) {
   const tallest = useRef<{ size: string; byTool: Record<string, number> }>({ size: '', byTool: {} });
