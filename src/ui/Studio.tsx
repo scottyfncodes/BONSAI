@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   cutSelected,
   emitResetCamera,
@@ -35,8 +35,11 @@ export function Studio() {
     stageRef.current = s;
   }, []);
 
+  const rootRef = useRef<HTMLDivElement>(null);
+
   useStudioKeys();
   useThumbnails(stageRef, record?.id ?? null, st);
+  useOpenWindow(rootRef, stageRef, st?.tool ?? null);
 
   if (!st || !record) {
     return (
@@ -50,7 +53,7 @@ export function Studio() {
   }
   const work = st.history.present;
   return (
-    <div className="studio">
+    <div className="studio" ref={rootRef}>
       <TreeViewport
         work={work}
         interactive
@@ -98,7 +101,7 @@ function StudioHeader({ record, st }: { record: TreeRecord; st: StudioState }) {
   return (
     <header className="studio-top">
       <button className="tree-title" onClick={() => openSheet({ kind: 'treeOptions', treeId: record.id })} aria-label={`${record.name} – tree options`}>
-        <h1>
+        <h1 className={record.name.length > 22 ? 'long' : undefined}>
           {record.name} <IconChevronDown style={{ width: 16, height: 16, verticalAlign: 'middle', opacity: 0.5 }} />
         </h1>
         <span className="meta">
@@ -136,7 +139,7 @@ function SaveBadge({ status }: { status: string }) {
   if (status === 'idle') return null;
   const label = status === 'saving' ? 'Saving' : status === 'error' ? 'Not saved' : 'Saved';
   return (
-    <span className={`save-badge ${status}`} style={{ opacity: visible || status !== 'saved' ? 1 : 0 }} role="status" title={error ?? undefined} data-testid="save-badge">
+    <span className={`save-badge ${status}${visible || status !== 'saved' ? '' : ' at-rest'}`} role="status" title={error ?? undefined} data-testid="save-badge">
       <span className="dot" />
       {label}
     </span>
@@ -251,6 +254,60 @@ function Coach({ st }: { st: StudioState }) {
       <button onClick={skipOnboarding}>Skip tips</button>
     </div>
   );
+}
+
+// ------------------------------------------------------------- framing
+
+/**
+ * Tell the stage which part of the view is free of interface, so the tree is
+ * framed between the header (or challenge bar) and the open tool panel.
+ *
+ * A tool's panel grows when a branch is chosen. The tallest height seen for
+ * each tool is kept, so choosing a branch never moves the tree under a finger.
+ */
+/** Room a tool's panel takes once a branch is chosen (panel + dock), so the first tap doesn't move the tree either. */
+const SELECTED_PANEL_FLOOR: Record<string, number> = { prune: 254, shape: 318, wire: 234 };
+
+function useOpenWindow(rootRef: React.RefObject<HTMLDivElement | null>, stageRef: React.RefObject<Stage | null>, tool: string | null) {
+  const tallest = useRef<{ size: string; byTool: Record<string, number> }>({ size: '', byTool: {} });
+  const measure = useCallback(() => {
+    const root = rootRef.current;
+    const stage = stageRef.current;
+    const bottom = root?.querySelector<HTMLElement>('.studio-bottom');
+    const top = root?.querySelector<HTMLElement>('.studio-top');
+    if (!root || !stage || !bottom || !top || !tool) return;
+    // The challenge bar and the coach tip sit under the header.
+    const banner = root.querySelector<HTMLElement>('.hud, .coach');
+    const head = banner ? banner.offsetTop + banner.offsetHeight : top.offsetHeight;
+    // On short landscape screens the panel and dock sit beside the tree, not under it.
+    if (matchMedia('(orientation: landscape) and (max-height: 500px)').matches) {
+      stage.setOpenWindow(head + 8, root.clientHeight - 10);
+      return;
+    }
+    const size = `${root.clientWidth}x${root.clientHeight}`;
+    if (tallest.current.size !== size) tallest.current = { size, byTool: {} };
+    // Everything below the undo row: the panel and the tool dock.
+    const row = bottom.querySelector<HTMLElement>('.edit-row');
+    const covered = bottom.offsetHeight - (row ? row.offsetTop + row.offsetHeight : 0);
+    const reserve = Math.max(covered, tallest.current.byTool[tool] ?? 0, SELECTED_PANEL_FLOOR[tool] ?? 0);
+    tallest.current.byTool[tool] = reserve;
+    // The undo row's buttons sit at the edges; the stand may slip between them.
+    stage.setOpenWindow(head + 8, root.clientHeight - reserve - 6);
+  }, [rootRef, stageRef, tool]);
+
+  // After every render: a branch was chosen, the coach tip left, a challenge began.
+  useLayoutEffect(measure);
+
+  // Between renders: the window was resized or rotated, or text wrapped differently.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(root);
+    const bottom = root.querySelector('.studio-bottom');
+    if (bottom) ro.observe(bottom);
+    return () => ro.disconnect();
+  }, [rootRef, measure]);
 }
 
 // ------------------------------------------------------------- keyboard

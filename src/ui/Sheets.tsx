@@ -51,13 +51,24 @@ export function Sheets() {
   if (!sheet) return null;
   return (
     <div className="scrim" onPointerDown={(e) => e.target === e.currentTarget && closeSheet()}>
-      <div className="sheet" role="dialog" aria-modal="true" ref={ref} data-testid={`sheet-${sheet.kind}`}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label={SHEET_NAMES[sheet.kind]} ref={ref} data-testid={`sheet-${sheet.kind}`}>
         <div className="grabber" />
         <SheetBody sheet={sheet} />
       </div>
     </div>
   );
 }
+
+/** What a screen reader announces when each sheet opens. */
+const SHEET_NAMES: Record<NonNullable<Sheet>['kind'], string> = {
+  newTree: 'Start a tree',
+  treeOptions: 'Tree options',
+  rename: 'Rename tree',
+  confirmDelete: 'Delete tree',
+  challengeIntro: 'Challenge',
+  challengeResult: 'Challenge result',
+  settings: 'Sound and settings',
+};
 
 function SheetBody({ sheet }: { sheet: NonNullable<Sheet> }) {
   switch (sheet.kind) {

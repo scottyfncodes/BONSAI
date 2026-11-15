@@ -28,6 +28,19 @@ async function open(page: Page) {
   await page.waitForTimeout(600);
 }
 
+/** Wait until the camera has finished gliding: the stage reports the same pot position twice running. */
+async function cameraAtRest(page: Page) {
+  const viewport = page.getByTestId('viewport');
+  let last = '';
+  let still = 0;
+  for (let i = 0; i < 60 && still < 3; i++) {
+    await page.waitForTimeout(250);
+    const now = (await viewport.getAttribute('data-tree-bottom')) ?? '';
+    still = now && now === last ? still + 1 : 0;
+    last = now;
+  }
+}
+
 async function waitSaved(page: Page) {
   await expect(page.getByTestId('save-badge')).toHaveText(/Saved/);
 }
@@ -101,6 +114,8 @@ test('shaping with a handle changes real branch geometry', async ({ page }) => {
   await page.keyboard.press(']');
   const tip = page.locator('.handle.tip');
   await expect(tip).toBeVisible();
+  // The camera glides to frame the tree above the taller Shape panel; grab the handle once it rests.
+  await cameraAtRest(page);
   const sel = await page.evaluate(() => document.querySelector('.panel-title')?.textContent);
   expect(sel).toBeTruthy();
   const before = await savedActive(page);
@@ -111,10 +126,10 @@ test('shaping with a handle changes real branch geometry', async ({ page }) => {
   await page.mouse.down();
   for (let i = 1; i <= 10; i++) await page.mouse.move(cx + i * 4, cy - i * 8);
   await page.mouse.up();
-  await page.waitForTimeout(900);
+  // The save is debounced: wait for the bend itself to reach storage, not for a badge that may predate it.
+  await expect.poll(async () => (await savedActive(page))!.tree.stats.bends).toBe(before!.tree.stats.bends + 1);
   await waitSaved(page);
   const after = await savedActive(page);
-  expect(after!.tree.stats.bends).toBe(before!.tree.stats.bends + 1);
   const changed = Object.keys(after!.tree.branches).some((id) => {
     const a = after!.tree.branches[id].shape;
     const p = before!.tree.branches[id]?.shape;
@@ -250,4 +265,30 @@ test('a collection backup restores deleted trees', async ({ page }) => {
   await expect(page.getByText(/Imported 1 tree/)).toBeVisible();
   await page.getByRole('button', { name: 'Done' }).click();
   await expect(page.getByTestId('tree-card')).toHaveCount(1);
+});
+
+test('the tree and its pot stay clear of every tool panel', async ({ page }) => {
+  await open(page);
+  for (const tool of ['shape', 'grow', 'pot', 'view']) {
+    await page.getByTestId(`tool-${tool}`).click();
+    // Let the camera glide to its new resting pose.
+    await cameraAtRest(page);
+    const panelTop = (await page.getByTestId(`panel-${tool}`).boundingBox())!.y;
+    const viewport = page.getByTestId('viewport');
+    const view = (await viewport.boundingBox())!;
+    // Underside of the pot and stand, as the stage last drew it.
+    const stand = Number(await viewport.getAttribute('data-tree-bottom'));
+    expect(stand, `${tool}: the stage reports where the pot ends`).toBeGreaterThan(0);
+    expect(view.y + stand, `${tool}: pot above the panel`).toBeLessThan(panelTop + 4);
+  }
+});
+
+test('shape handles do not leak onto other tabs', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('tool-shape').click();
+  await page.keyboard.press(']');
+  await page.keyboard.press(']');
+  await expect(page.locator('.handle.tip')).toBeVisible();
+  await page.getByTestId('tab-collection').click();
+  await expect(page.locator('.handle.tip')).toBeHidden();
 });

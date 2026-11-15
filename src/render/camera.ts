@@ -10,6 +10,8 @@ export interface CameraPose {
 
 export const PITCH_LIMITS: [number, number] = [-0.12, 1.05];
 export const DIST_LIMITS: [number, number] = [2.6, 14];
+/** Small screens with a tall panel open need to stand further back to show the whole tree. */
+const HOME_DIST_MAX = 26;
 
 /** Damped orbit camera. All gestures write to `goal`; the camera eases toward it. */
 export class CameraRig {
@@ -42,7 +44,7 @@ export class CameraRig {
     const total = height + potDepth;
     const tanHalf = Math.tan((this.camera.fov * Math.PI) / 360);
     const visibleH = Math.max(total / this.framing.fill, (width * 1.12) / Math.max(aspect, 0.3) / Math.min(1, this.framing.fill * 1.6));
-    const distance = clamp(visibleH / (2 * tanHalf), 5, DIST_LIMITS[1]);
+    const distance = clamp(visibleH / (2 * tanHalf), 5, HOME_DIST_MAX);
     const mid = height / 2 - potDepth / 2;
     // Lower the look-at point so the tree's middle sits `center` from the top.
     const shift = (0.5 - this.framing.center) * 2 * distance * tanHalf;
@@ -64,8 +66,13 @@ export class CameraRig {
     this.goal.pitch = clamp(this.goal.pitch + dPitch, PITCH_LIMITS[0], PITCH_LIMITS[1]);
   }
 
+  /** Furthest the player may pull back: never closer than the resting pose. */
+  get maxDistance(): number {
+    return Math.max(DIST_LIMITS[1], this.home.distance * 1.15);
+  }
+
   zoom(factor: number): void {
-    this.goal.distance = clamp(this.goal.distance * factor, DIST_LIMITS[0], DIST_LIMITS[1]);
+    this.goal.distance = clamp(this.goal.distance * factor, DIST_LIMITS[0], this.maxDistance);
   }
 
   /** Pan in screen space (pixels), scaled so the content tracks the finger. */

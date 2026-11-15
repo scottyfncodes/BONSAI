@@ -68,3 +68,7 @@ Saves live on this device only (localStorage + IndexedDB):
 - Growth simulation runs in a Web Worker, so advancing a year never freezes the UI. If workers are unavailable it falls back to the main thread.
 - The bark mesher writes into typed arrays. Edits are coalesced to one rebuild per frame, and bark uses coarser tessellation while a handle is being dragged.
 - Pixel ratio is capped at 2 and drops automatically on devices that can't keep up.
+
+## Assets
+
+Everything BONSAI ships is made for this project and owned by it: the app icon (`public/icon.svg` and its PNG sizes), the procedural scenery, and the synthesised sound. No third-party art or audio files are included. The two typefaces, Fraunces and Inter, come from the `@fontsource-variable` packages under the SIL Open Font License.

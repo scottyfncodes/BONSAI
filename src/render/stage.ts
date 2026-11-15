@@ -6,9 +6,9 @@ import { type TreeLayout, bezierPoint, frameAt, layoutBounds, radiusAt } from '.
 import type { PrunePreview } from '../tree/ops';
 import { SPECIES, seasonOf } from '../tree/species';
 import type { BranchId, TreeState } from '../tree/types';
-import type { V3 } from '../tree/vec';
+import { type V3, clamp } from '../tree/vec';
 import { buildBarkGeometry, buildWireGeometry } from './barkMesh';
-import { CameraRig } from './camera';
+import { CameraRig, DIST_LIMITS } from './camera';
 import { type FoliageCluster, type FoliageMesh, buildFoliage, foliageClusters, foliageColor, highlightFoliage, snowAmount, windTime } from './foliage';
 import { buildMarks } from './marks';
 import { SeasonParticles, petalTexture } from './particles';
@@ -228,6 +228,31 @@ export class Stage {
   private baseFraming: { center: number; fill: number; x?: number } | null = null;
   private wasLandscape = false;
 
+  /**
+   * The part of the view the interface leaves open, in CSS pixels from the
+   * top of the container. When set (the Studio), the tree is framed
+   * inside it instead of at a fixed place, so no panel covers the tree.
+   */
+  private openWindow: { top: number; bottom: number } | null = null;
+
+  setOpenWindow(top: number, bottom: number): void {
+    const prev = this.openWindow;
+    if (prev && Math.abs(prev.top - top) < 4 && Math.abs(prev.bottom - bottom) < 4) return;
+    this.openWindow = { top, bottom };
+    this.resize();
+    // The first window arrives with the first frame: no visible glide.
+    this.rehome(!prev);
+  }
+
+  private windowFraming(h: number): { center: number; fill: number } | null {
+    const o = this.openWindow;
+    if (!o) return null;
+    const top = clamp(o.top, 0, h);
+    const open = clamp(o.bottom, top, h) - top;
+    if (open < 60) return null;
+    return { center: (top + open * 0.5) / h, fill: Math.max(0.16, (open * 0.92) / h) };
+  }
+
   resize(): void {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
@@ -238,13 +263,16 @@ export class Stage {
     cam.fov = w / h < 0.7 ? 34 : 30;
     this.baseFraming ??= this.rig.framing;
     const landscape = !!this.landscapeFraming && w / h > 1.3 && h < 520;
-    this.rig.framing = landscape ? this.landscapeFraming! : this.baseFraming;
+    const open = this.windowFraming(h);
+    // In landscape the tools sit beside the tree: keep the sideways shift, fit the height that is free.
+    this.rig.framing = landscape ? { ...this.landscapeFraming!, ...open } : (open ?? this.baseFraming);
     // Shift the projection centre sideways so the tree sits in the open area.
     const x = this.rig.framing.x ?? 0.5;
     if (Math.abs(x - 0.5) > 1e-3) cam.setViewOffset(w, h, (0.5 - x) * w, 0, w, h);
     else cam.clearViewOffset();
     cam.updateProjectionMatrix();
     if (landscape !== this.wasLandscape && this.input) this.frameTree(false);
+    else if (this.openWindow) this.rehome(false);
     this.wasLandscape = landscape;
     this.invalidate();
   }
@@ -345,13 +373,37 @@ export class Stage {
     this.invalidate();
   }
 
-  /** Frame the camera to the current tree (used when opening a tree). */
-  frameTree(immediate = false): void {
+  private computeHome(): void {
     if (!this.input) return;
     const b = layoutBounds(this.input.layout);
     const width = Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2]);
     const pot = potDims(this.input.pot);
     this.rig.setHome(Math.max(b.max[1], 1.5), Math.max(width, pot.width), pot.height + 0.15, this.rig.camera.aspect);
+  }
+
+  /**
+   * The open window changed (another panel, a resize): move the resting pose
+   * with it, and carry the player's own turn, zoom and pan along unchanged.
+   */
+  private rehome(immediate: boolean): void {
+    if (!this.input) return;
+    const before = this.rig.home;
+    this.computeHome();
+    const after = this.rig.home;
+    const g = this.rig.goal;
+    g.distance = clamp((g.distance * after.distance) / before.distance, DIST_LIMITS[0], this.rig.maxDistance);
+    g.target = [g.target[0], g.target[1] + after.target[1] - before.target[1], g.target[2]];
+    if (immediate) {
+      this.rig.pose = { ...g, target: [...g.target] };
+      this.rig.apply();
+    }
+    this.invalidate();
+  }
+
+  /** Frame the camera to the current tree (used when opening a tree). */
+  frameTree(immediate = false): void {
+    if (!this.input) return;
+    this.computeHome();
     this.rig.reset();
     if (immediate) {
       this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
@@ -724,6 +776,12 @@ export class Stage {
     return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h, depth, visible: v.z < 1 && v.z > -1 };
   }
 
+  /** Screen y (CSS px from the top of the view) of the underside of the pot and stand. */
+  treeBottomY(): number {
+    if (!this.input) return 0;
+    return this.project([0, -(potDims(this.input.pot).height + 0.15), 0]).y;
+  }
+
   private pxPerWorld(depth: number): number {
     const h = this.container.clientHeight;
     return h / (2 * Math.tan((this.rig.camera.fov * Math.PI) / 360) * Math.max(depth, 0.01));
@@ -834,6 +892,8 @@ export class Stage {
     height: number;
     background: Background;
     caption?: { title: string; lines: string[] };
+    /** Where the tree sits in the picture; default: as it sits on screen. */
+    framing?: { center: number; fill: number };
   }): Promise<HTMLCanvasElement> {
     const { width, height, background, caption } = opts;
     const out = document.createElement('canvas');
@@ -877,7 +937,20 @@ export class Stage {
       this.renderer.setSize(width, height, false);
       this.rig.camera.aspect = width / height;
       this.rig.camera.updateProjectionMatrix();
-      this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
+      const pose = { ...this.rig.goal, target: [...this.rig.goal.target] as [number, number, number] };
+      if (opts.framing) {
+        // Compose for the picture, not for whichever panel is open: swap the
+        // resting pose for the picture's, keeping the player's turn, zoom and pan.
+        const home = this.rig.home;
+        const framing = this.rig.framing;
+        this.rig.framing = opts.framing;
+        this.computeHome();
+        pose.distance *= this.rig.home.distance / home.distance;
+        pose.target[1] += this.rig.home.target[1] - home.target[1];
+        this.rig.framing = framing;
+        this.rig.home = home;
+      }
+      this.rig.pose = pose;
       this.rig.apply();
       this.renderer.render(this.scene, this.rig.camera);
       g.drawImage(this.renderer.domElement, 0, 0, width, height);
@@ -921,7 +994,12 @@ export class Stage {
 
   /** Small JPEG thumbnail of the current view for collection cards. */
   async thumbnail(scenery: Scenery, size = 320): Promise<string> {
-    const c = await this.captureCanvas({ width: size, height: Math.round(size * 1.25), background: { ...BACKGROUNDS[0]!, scenery } });
+    const c = await this.captureCanvas({
+      width: size,
+      height: Math.round(size * 1.25),
+      background: { ...BACKGROUNDS[0]!, scenery },
+      framing: { center: 0.52, fill: 0.62 },
+    });
     return c.toDataURL('image/jpeg', 0.78);
   }
 

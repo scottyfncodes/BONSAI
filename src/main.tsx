@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { boot } from './app/actions';
 import './styles.css';
 import { App } from './ui/App';
+import { ErrorBoundary } from './ui/ErrorBoundary';
 
 // iOS Safari ignores user-scalable=no; stop page pinch-zoom from hijacking tree gestures.
 for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
@@ -13,6 +14,8 @@ boot();
 document.getElementById('splash')?.remove();
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

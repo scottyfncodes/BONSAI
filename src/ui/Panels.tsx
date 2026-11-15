@@ -189,7 +189,7 @@ export function ShapePanel({ st }: { st: StudioState }) {
         )}
       </p>
       <div className="row">
-        <div className="row" style={{ gap: 4 }} role="group" aria-label="Nudge branch">
+        <div className="nudges" role="group" aria-label="Nudge branch">
           <button className="chip" onClick={() => nudgeSelected('up')} aria-label="Raise branch">
             <IconArrow dir="up" />
           </button>
