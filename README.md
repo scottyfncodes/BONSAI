@@ -71,4 +71,4 @@ Saves live on this device only (localStorage + IndexedDB):
 
 ## Assets
 
-Everything BONSAI ships is made for this project: the app icon (`public/icon.svg` and its PNG sizes), the procedural scenery, and the synthesised sound. No third-party art or audio files are included. The two typefaces, Fraunces and Inter, come from the `@fontsource-variable` packages under the SIL Open Font License.
+Everything BONSAI ships is made for this project and owned by it: the app icon (`public/icon.svg` and its PNG sizes), the procedural scenery, and the synthesised sound. No third-party art or audio files are included. The two typefaces, Fraunces and Inter, come from the `@fontsource-variable` packages under the SIL Open Font License.
