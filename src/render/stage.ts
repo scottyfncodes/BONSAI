@@ -8,7 +8,8 @@ import { SPECIES, seasonOf } from '../tree/species';
 import type { BranchId, TreeState } from '../tree/types';
 import type { V3 } from '../tree/vec';
 import { buildBarkGeometry, buildWireGeometry } from './barkMesh';
-import { CameraRig } from './camera';
+import { clamp } from '../tree/vec';
+import { CameraRig, DIST_LIMITS } from './camera';
 import { type FoliageCluster, type FoliageMesh, buildFoliage, foliageClusters, foliageColor, highlightFoliage, snowAmount, windTime } from './foliage';
 import { buildMarks } from './marks';
 import { SeasonParticles, petalTexture } from './particles';
@@ -228,6 +229,31 @@ export class Stage {
   private baseFraming: { center: number; fill: number; x?: number } | null = null;
   private wasLandscape = false;
 
+  /**
+   * The part of the view the interface leaves open, in CSS pixels from the
+   * top of the container. When set (portrait Studio), the tree is framed
+   * inside it instead of at a fixed place, so no panel covers the tree.
+   */
+  private openWindow: { top: number; bottom: number } | null = null;
+
+  setOpenWindow(top: number, bottom: number): void {
+    const prev = this.openWindow;
+    if (prev && Math.abs(prev.top - top) < 4 && Math.abs(prev.bottom - bottom) < 4) return;
+    this.openWindow = { top, bottom };
+    this.resize();
+    // The first window arrives with the first frame: no visible glide.
+    this.rehome(!prev);
+  }
+
+  private windowFraming(h: number): { center: number; fill: number } | null {
+    const o = this.openWindow;
+    if (!o) return null;
+    const top = clamp(o.top, 0, h);
+    const open = clamp(o.bottom, top, h) - top;
+    if (open < 60) return null;
+    return { center: (top + open * 0.5) / h, fill: Math.max(0.16, (open * 0.92) / h) };
+  }
+
   resize(): void {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
@@ -238,13 +264,14 @@ export class Stage {
     cam.fov = w / h < 0.7 ? 34 : 30;
     this.baseFraming ??= this.rig.framing;
     const landscape = !!this.landscapeFraming && w / h > 1.3 && h < 520;
-    this.rig.framing = landscape ? this.landscapeFraming! : this.baseFraming;
+    this.rig.framing = landscape ? this.landscapeFraming! : (this.windowFraming(h) ?? this.baseFraming);
     // Shift the projection centre sideways so the tree sits in the open area.
     const x = this.rig.framing.x ?? 0.5;
     if (Math.abs(x - 0.5) > 1e-3) cam.setViewOffset(w, h, (0.5 - x) * w, 0, w, h);
     else cam.clearViewOffset();
     cam.updateProjectionMatrix();
     if (landscape !== this.wasLandscape && this.input) this.frameTree(false);
+    else if (this.openWindow && !landscape) this.rehome(false);
     this.wasLandscape = landscape;
     this.invalidate();
   }
@@ -345,13 +372,37 @@ export class Stage {
     this.invalidate();
   }
 
-  /** Frame the camera to the current tree (used when opening a tree). */
-  frameTree(immediate = false): void {
+  private computeHome(): void {
     if (!this.input) return;
     const b = layoutBounds(this.input.layout);
     const width = Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2]);
     const pot = potDims(this.input.pot);
     this.rig.setHome(Math.max(b.max[1], 1.5), Math.max(width, pot.width), pot.height + 0.15, this.rig.camera.aspect);
+  }
+
+  /**
+   * The open window changed (another panel, a resize): move the resting pose
+   * with it, and carry the player's own turn, zoom and pan along unchanged.
+   */
+  private rehome(immediate: boolean): void {
+    if (!this.input) return;
+    const before = this.rig.home;
+    this.computeHome();
+    const after = this.rig.home;
+    const g = this.rig.goal;
+    g.distance = clamp((g.distance * after.distance) / before.distance, DIST_LIMITS[0], this.rig.maxDistance);
+    g.target = [g.target[0], g.target[1] + after.target[1] - before.target[1], g.target[2]];
+    if (immediate) {
+      this.rig.pose = { ...g, target: [...g.target] };
+      this.rig.apply();
+    }
+    this.invalidate();
+  }
+
+  /** Frame the camera to the current tree (used when opening a tree). */
+  frameTree(immediate = false): void {
+    if (!this.input) return;
+    this.computeHome();
     this.rig.reset();
     if (immediate) {
       this.rig.pose = { ...this.rig.goal, target: [...this.rig.goal.target] };
