@@ -264,14 +264,16 @@ export class Stage {
     cam.fov = w / h < 0.7 ? 34 : 30;
     this.baseFraming ??= this.rig.framing;
     const landscape = !!this.landscapeFraming && w / h > 1.3 && h < 520;
-    this.rig.framing = landscape ? this.landscapeFraming! : (this.windowFraming(h) ?? this.baseFraming);
+    const open = this.windowFraming(h);
+    // In landscape the tools sit beside the tree: keep the sideways shift, fit the height that is free.
+    this.rig.framing = landscape ? { ...this.landscapeFraming!, ...open } : (open ?? this.baseFraming);
     // Shift the projection centre sideways so the tree sits in the open area.
     const x = this.rig.framing.x ?? 0.5;
     if (Math.abs(x - 0.5) > 1e-3) cam.setViewOffset(w, h, (0.5 - x) * w, 0, w, h);
     else cam.clearViewOffset();
     cam.updateProjectionMatrix();
     if (landscape !== this.wasLandscape && this.input) this.frameTree(false);
-    else if (this.openWindow && !landscape) this.rehome(false);
+    else if (this.openWindow) this.rehome(false);
     this.wasLandscape = landscape;
     this.invalidate();
   }

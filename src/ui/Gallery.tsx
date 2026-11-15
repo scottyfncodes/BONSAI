@@ -82,7 +82,7 @@ export function Gallery() {
         </div>
         {error && <div className="notice">Portrait storage isn’t available in this browser mode. You can still download portraits as you take them.</div>}
         {portraits && portraits.length === 0 && !error && (
-          <div className="empty" style={{ paddingTop: 20 }}>
+          <div className="empty" style={{ padding: '20px 24px 0' }}>
             <IconCamera />
             <h2>No portraits yet</h2>
             <p>Open a tree in Portrait mode, choose a backdrop and capture it. Portraits never include the interface.</p>

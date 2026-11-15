@@ -286,6 +286,11 @@ function useOpenWindow(rootRef: React.RefObject<HTMLDivElement | null>, stageRef
       // Everything below the undo row: the panel and the tool dock.
       const row = bottom.querySelector<HTMLElement>('.edit-row');
       const covered = bottom.offsetHeight - (row ? row.offsetTop + row.offsetHeight : 0);
+      // On short landscape screens the panel and dock sit beside the tree, not under it.
+      if (matchMedia('(orientation: landscape) and (max-height: 500px)').matches) {
+        stage.setOpenWindow(head + 8, root.clientHeight - 10);
+        return;
+      }
       const reserve = Math.max(covered, tallest.current.byTool[tool] ?? 0, SELECTED_PANEL_FLOOR[tool] ?? 0);
       tallest.current.byTool[tool] = reserve;
       // The undo row's buttons sit at the edges; the stand may slip between them.
